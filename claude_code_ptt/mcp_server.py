@@ -5,6 +5,7 @@ Install once, valid for every session of the user:
 
 Starts the daemon automatically if it is not running yet.
 """
+import atexit
 import os
 import subprocess
 import sys
@@ -97,10 +98,17 @@ def _register_session() -> None:
                 pass                        # daemon restarts re-register us
             time.sleep(10)
 
+    def goodbye():
+        try:
+            _request("/unregister", {"pid": payload["pid"]})
+        except (urllib.error.URLError, OSError):
+            pass                            # reaper cleans up eventually
+
     try:
         _request("/register", payload)
     except (urllib.error.URLError, OSError):
         pass
+    atexit.register(goodbye)
     threading.Thread(target=loop, daemon=True).start()
 
 

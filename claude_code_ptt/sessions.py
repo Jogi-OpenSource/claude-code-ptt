@@ -113,6 +113,15 @@ class SessionRegistry:
         """Overlay click: pin this session as the PTT target (0 = auto)."""
         self.selected_pid = pid
 
+    def unregister(self, pid: int) -> None:
+        """Session closes: drop it; a pinned target falls back to auto."""
+        with self._lock:
+            info = self._sessions.pop(pid, None)
+        if info:
+            log.info("session unregistered: %s (pid=%d)", info["label"], pid)
+        if self.selected_pid == pid:
+            self.selected_pid = 0
+
     @property
     def selected_hwnd(self) -> int:
         with self._lock:

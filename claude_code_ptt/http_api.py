@@ -77,6 +77,9 @@ def make_handler(daemon):
                     return
                 info = daemon.registry.register(pid, cwd)
                 self._send(200, {"ok": True, "session": info})
+            elif self.path == "/unregister":
+                daemon.registry.unregister(int(self._body().get("pid") or 0))
+                self._send(200, {"ok": True})
             elif self.path == "/heartbeat":
                 pid = int(self._body().get("pid") or 0)
                 # always 200: "unknown" tells the adapter to re-register,

@@ -118,7 +118,7 @@ class Overlay:
                 bg, fg, dot_fg, border = base_bg, base_fg, base_bg, base_bg
 
                 if is_target and state["phase"] == "recording":
-                    dot_fg, border = RED, RED
+                    dot_fg, border, fg = RED, RED, RED
                 elif is_target and state["phase"] == "transcribing":
                     pulse = (math.sin(time.monotonic() * 2 * math.pi / 1.6)
                              + 1) / 2

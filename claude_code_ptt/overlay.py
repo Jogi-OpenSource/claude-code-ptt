@@ -116,6 +116,13 @@ class Overlay:
                 add_row(style_label, -style_no)
 
         def paint():
+            try:
+                _paint_once()
+            except Exception:              # noqa: BLE001
+                log.exception("overlay paint failed")
+            root.after(TICK_MS, paint)     # the loop must survive any error
+
+        def _paint_once():
             sessions = self._daemon.registry.list()
             selected = self._daemon.registry.selected_pid
             state = self._daemon.ui_state()
@@ -149,7 +156,7 @@ class Overlay:
                         elif style == 4:
                             bg = DARK_RED
                             fg, border = "white", DARK_RED
-                            dot_fg = _mix("white", RED, pulse)
+                            dot_fg = _mix("#ffffff", RED, pulse)
                         elif style == 5:
                             dot_fg = _mix(ROW_BG, RED, pulse)
                 elif is_target and recording:
@@ -166,7 +173,6 @@ class Overlay:
             title.configure(
                 fg=RED if state["phase"] == "recording" else ACCENT,
                 text="● REC" if state["phase"] == "recording" else "● PTT")
-            root.after(TICK_MS, paint)
 
         paint()
         root.mainloop()

@@ -88,6 +88,16 @@ class TargetTracker:
 
 
 # ------------------------------------------------------------------ clipboard
+# 64-bit safety: without explicit types ctypes truncates handles to 32 bit.
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.SetClipboardData.argtypes = [wt.UINT, ctypes.c_void_p]
+
+
 def _clipboard_get() -> str:
     text = ""
     if not user32.OpenClipboard(None):

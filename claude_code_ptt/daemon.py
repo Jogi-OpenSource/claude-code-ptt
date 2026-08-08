@@ -44,9 +44,15 @@ class Daemon:
 
     @staticmethod
     def _beep(frequency: int) -> None:
-        """Audible cue, off the hotkey thread so nothing ever blocks it."""
-        threading.Thread(target=winsound.Beep, args=(frequency, 120),
-                         daemon=True).start()
+        """Audible cue, off the hotkey thread so nothing ever blocks it.
+
+        A near-inaudible primer tone runs first: speakers with auto-standby
+        (USB boxes etc.) swallow the first few hundred ms after waking up.
+        """
+        def cue():
+            winsound.Beep(37, 180)
+            winsound.Beep(frequency, 300)
+        threading.Thread(target=cue, daemon=True).start()
 
     def toggle(self) -> None:
         if self.recorder.recording:

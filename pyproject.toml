@@ -1,0 +1,23 @@
+[project]
+name = "claude-code-ptt"
+version = "0.1.0"
+description = "Push-to-talk for Claude Code on Windows: global hotkey, local Whisper, spoken replies"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "numpy>=1.24",
+    "edge-tts>=6.1",
+]
+
+[project.scripts]
+claude-code-ptt = "claude_code_ptt.daemon:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["claude_code_ptt*"]

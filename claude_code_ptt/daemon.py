@@ -8,10 +8,10 @@ import ctypes.wintypes
 import logging
 import sys
 import threading
-import winsound
 
 from . import http_api
 from .config import Config, config_dir
+from .cues import play_cue
 from .injector import TargetTracker, inject_text
 from .recorder import Recorder
 from .speaker import Speaker
@@ -43,22 +43,10 @@ class Daemon:
             self.tracker.pin(hwnd)
         return hwnd
 
-    @staticmethod
-    def _beep(frequency: int) -> None:
-        """Audible cue, off the hotkey thread so nothing ever blocks it.
-
-        A near-inaudible primer tone runs first: speakers with auto-standby
-        (USB boxes etc.) swallow the first few hundred ms after waking up.
-        """
-        def cue():
-            winsound.Beep(37, 180)
-            winsound.Beep(frequency, 300)
-        threading.Thread(target=cue, daemon=True).start()
-
     def toggle(self) -> None:
         if self.recorder.recording:
             audio = self.recorder.stop()
-            self._beep(520)                # low beep: stopped, transcribing
+            play_cue("record_stop")
             log.info("recording stopped (%.1fs), transcribing...",
                      audio.size / 16_000)
             threading.Thread(target=self._finish, args=(audio,),
@@ -66,7 +54,7 @@ class Daemon:
         else:
             self.speaker.interrupt()       # talking to Claude cuts Claude off
             self.recorder.start()
-            self._beep(880)                # high beep: recording now
+            play_cue("record_start")
             log.info("recording started")
 
     def _finish(self, audio) -> None:
@@ -76,6 +64,7 @@ class Daemon:
             log.exception("transcription failed")
             return
         if not text:
+            play_cue("error")
             log.info("empty transcript, nothing to inject")
             return
         target = self.tracker.target

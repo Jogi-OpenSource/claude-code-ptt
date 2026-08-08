@@ -1,7 +1,14 @@
 """The claude-code-ptt daemon: hotkey -> record -> transcribe -> inject.
 
 Single instance per machine. Owns the global hotkey (default Ctrl+M) and the
-microphone; the MCP adapter talks to it over localhost HTTP (Phase 2).
+microphone; the MCP adapter talks to it over localhost HTTP.
+
+Delivery model: the target is ALWAYS an explicitly clicked session in the
+overlay - there is no focus tracking. A transcript without a valid target is
+held back ("ZIEL WAEHLEN") until the user picks one. After injection the
+daemon waits for the session's confirm hook to report the prompt as actually
+processed; only that counts as delivered ("ANGEKOMMEN"). No confirmation
+within CONFIRM_TIMEOUT means delivery failure ("NICHT ANGEKOMMEN").
 """
 import ctypes
 import ctypes.wintypes
@@ -13,7 +20,7 @@ import time
 from . import http_api
 from .config import Config, config_dir
 from .cues import play_cue
-from .injector import TargetTracker, inject_text
+from .injector import inject_text
 from .overlay import Overlay
 from .recorder import Recorder
 from .sessions import SessionRegistry
@@ -27,6 +34,8 @@ MOD_NOREPEAT = 0x4000
 WM_HOTKEY = 0x0312
 HOTKEY_ID = 1
 MIC_PREFIX = "\U0001F3A4 "                 # microphone emoji
+CONFIRM_TIMEOUT = 8.0
+FLASH_SECONDS = 2.0
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -36,45 +45,51 @@ class Daemon:
         self.config = config
         self.recorder = Recorder()
         self.transcriber = Transcriber(config.whisper_model, config.language)
-        self.tracker = TargetTracker(config.window_title_markers)
         self.speaker = Speaker(config.tts_voice,
                                hold_while=lambda: self.recorder.recording)
         self.registry = SessionRegistry()
         self._transcribing = 0
         self._sending = 0
+        self._pending_text = None          # transcript waiting for a target
+        self._await_text = None            # injected text awaiting confirm
+        self._await_until = 0.0
+        self._failed = False
         self._flash_until = 0.0
+        threading.Thread(target=self._confirm_watchdog, daemon=True).start()
         Overlay(self)
 
     def target_hwnd(self) -> int:
-        """Overlay selection wins; otherwise focus tracking."""
-        return self.registry.selected_hwnd or self.tracker.target
+        """The explicitly selected session's window; 0 if none."""
+        return self.registry.selected_hwnd
 
     def ui_state(self) -> dict:
         """Snapshot for the overlay: current phase + which row to highlight."""
         if self.recorder.recording:
             phase = "recording"
-        elif self._sending:                # checked first: it nests inside
-            phase = "sending"              # the transcribing span
+        elif self._sending or self._await_text is not None:
+            phase = "sending"
         elif self._transcribing:
             phase = "transcribing"
+        elif self._pending_text is not None:
+            phase = "choose_target"
+        elif self._failed:
+            phase = "failed"
         elif time.monotonic() < self._flash_until:
             phase = "flash"
         else:
             phase = "idle"
-        highlight = self.registry.selected_pid
-        if not highlight:
-            hwnd = self.tracker.target
-            for info in self.registry.list():
-                if info["hwnd"] == hwnd:
-                    highlight = info["pid"]
-                    break
-        return {"phase": phase, "highlight_pid": highlight}
+        return {"phase": phase,
+                "highlight_pid": self.registry.selected_pid}
 
-    def pin_foreground(self) -> int:
-        hwnd = user32.GetForegroundWindow()
-        if hwnd:
-            self.tracker.pin(hwnd)
-        return hwnd
+    def select_target(self, pid: int) -> None:
+        """Overlay click: choose the target; deliver a held transcript."""
+        self.registry.select(pid)
+        pending, self._pending_text = self._pending_text, None
+        if pending is not None and self.registry.selected_hwnd:
+            threading.Thread(target=self._deliver_wrapped, args=(pending,),
+                             daemon=True).start()
+        elif pending is not None:
+            self._pending_text = pending   # clicked row has no window
 
     def toggle(self) -> None:
         if self.recorder.recording:
@@ -89,9 +104,35 @@ class Daemon:
                              daemon=True).start()
         else:
             self.speaker.interrupt()       # talking to Claude cuts Claude off
+            self._failed = False           # new attempt clears the fail state
+            self._pending_text = None
             self.recorder.start()
             play_cue("record_start")
             log.info("recording started")
+
+    def confirm_received(self, prompt: str) -> bool:
+        """Confirm hook reported a processed prompt; match it to our send."""
+        awaited = self._await_text
+        if awaited is None:
+            return False
+        if awaited[:60] in prompt:
+            self._await_text = None
+            self._failed = False
+            self._flash_until = time.monotonic() + FLASH_SECONDS
+            log.info("delivery confirmed by session")
+            return True
+        return False
+
+    def _confirm_watchdog(self) -> None:
+        while True:
+            time.sleep(0.5)
+            if (self._await_text is not None
+                    and time.monotonic() > self._await_until):
+                self._await_text = None
+                self._failed = True
+                play_cue("error")
+                log.warning("delivery NOT confirmed - text may be stuck "
+                            "in the input line")
 
     def _finish(self, audio) -> None:
         try:
@@ -104,20 +145,34 @@ class Daemon:
                 play_cue("error")
                 log.info("empty transcript, nothing to inject")
                 return
-            self._sending += 1
-            try:
-                target = self.target_hwnd()
-                if inject_text(target, MIC_PREFIX + text):
-                    self._flash_until = time.monotonic() + 2.0
-                    log.info("injected %d chars into hwnd %d",
-                             len(text), target)
-                else:
-                    play_cue("error")
-                    log.warning("no Claude Code window found to inject into")
-            finally:
-                self._sending -= 1
+            if not self.registry.selected_hwnd:
+                self._pending_text = text
+                play_cue("error")
+                log.info("no target selected - transcript held back")
+                return
+            self._deliver_wrapped(text)
         finally:
             self._transcribing -= 1
+
+    def _deliver_wrapped(self, text: str) -> None:
+        self._sending += 1
+        try:
+            self._deliver(text)
+        finally:
+            self._sending -= 1
+
+    def _deliver(self, text: str) -> None:
+        target = self.registry.selected_hwnd
+        injected = MIC_PREFIX + text
+        if inject_text(target, injected):
+            self._await_text = injected
+            self._await_until = time.monotonic() + CONFIRM_TIMEOUT
+            log.info("injected %d chars into hwnd %d, awaiting confirmation",
+                     len(text), target)
+        else:
+            self._failed = True
+            play_cue("error")
+            log.warning("injection failed for hwnd %d", target)
 
     def run(self) -> None:
         modifiers = 0

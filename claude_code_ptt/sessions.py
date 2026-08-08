@@ -86,15 +86,18 @@ class SessionRegistry:
         self.selected_pid = 0                   # 0 = automatic (focus tracking)
         threading.Thread(target=self._reaper, daemon=True).start()
 
-    def register(self, pid: int, cwd: str) -> dict:
+    def register(self, pid: int, cwd: str, static: bool = False) -> dict:
+        """Static sessions have no heartbeating adapter (e.g. a manually
+        added window); they live until their window disappears."""
         label = PureWindowsPath(cwd).name or cwd
         hwnd = find_session_window(pid)
         with self._lock:
             self._sessions[pid] = {
-                "pid": pid, "cwd": cwd, "label": label,
-                "hwnd": hwnd, "last_seen": time.monotonic(),
+                "pid": pid, "cwd": cwd, "label": label, "hwnd": hwnd,
+                "static": static, "last_seen": time.monotonic(),
             }
-        log.info("session registered: %s (pid=%d, hwnd=%d)", label, pid, hwnd)
+        log.info("session registered: %s (pid=%d, hwnd=%d, static=%s)",
+                 label, pid, hwnd, static)
         return self._sessions[pid]
 
     def heartbeat(self, pid: int) -> bool:
@@ -137,8 +140,13 @@ class SessionRegistry:
             time.sleep(5)
             cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
             with self._lock:
-                dead = [pid for pid, info in self._sessions.items()
-                        if info["last_seen"] < cutoff]
+                dead = []
+                for pid, info in self._sessions.items():
+                    if info.get("static"):
+                        if not user32.IsWindow(info["hwnd"]):
+                            dead.append(pid)
+                    elif info["last_seen"] < cutoff:
+                        dead.append(pid)
                 for pid in dead:
                     log.info("session expired: %s (pid=%d)",
                              self._sessions[pid]["label"], pid)

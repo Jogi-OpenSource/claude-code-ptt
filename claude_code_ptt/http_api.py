@@ -5,10 +5,10 @@ Endpoints (JSON):
   GET  /sessions        -> registered sessions
   POST /speak           -> body {"text": ...}; queues TTS playback
   POST /interrupt       -> stops TTS playback
-  POST /register        -> body {"pid": ..., "cwd": ...}; session announces itself
+  POST /register        -> body {"pid", "cwd", "static"?}; session announces itself
   POST /heartbeat       -> body {"pid": ...}; keeps a registration alive
-  POST /pin-foreground  -> pins the current foreground window as target
-  POST /unpin           -> back to automatic focus tracking
+  POST /unregister      -> body {"pid": ...}; session says goodbye
+  POST /prompt-received -> body {"text": ...}; confirm hook reports a prompt
 """
 import json
 import logging
@@ -75,7 +75,8 @@ def make_handler(daemon):
                 if not pid:
                     self._send(400, {"error": "missing 'pid'"})
                     return
-                info = daemon.registry.register(pid, cwd)
+                info = daemon.registry.register(pid, cwd,
+                                                bool(body.get("static")))
                 self._send(200, {"ok": True, "session": info})
             elif self.path == "/unregister":
                 daemon.registry.unregister(int(self._body().get("pid") or 0))
@@ -85,12 +86,9 @@ def make_handler(daemon):
                 # always 200: "unknown" tells the adapter to re-register,
                 # a 4xx would surface as an exception there instead
                 self._send(200, {"ok": daemon.registry.heartbeat(pid)})
-            elif self.path == "/pin-foreground":
-                hwnd = daemon.pin_foreground()
-                self._send(200, {"ok": bool(hwnd), "target": hwnd})
-            elif self.path == "/unpin":
-                daemon.tracker.unpin()
-                self._send(200, {"ok": True})
+            elif self.path == "/prompt-received":
+                text = str(self._body().get("text") or "")
+                self._send(200, {"ok": daemon.confirm_received(text)})
             else:
                 self._send(404, {"error": "unknown path"})
 

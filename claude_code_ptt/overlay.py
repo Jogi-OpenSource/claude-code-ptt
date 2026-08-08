@@ -24,14 +24,17 @@ RED = "#ff5252"
 ORANGE = "#ff9d3c"
 TICK_MS = 100
 
-# title text + color per phase
+# title text + color per phase; blinking titles alternate color each 0.3s
 TITLES = {
     "idle": ("● PTT", ACCENT),
     "recording": ("● REC", RED),
     "transcribing": ("● TRANSKRIPTION", ORANGE),
     "sending": ("● SENDE", ORANGE),
     "flash": ("● ANGEKOMMEN", ORANGE),
+    "choose_target": ("● ZIEL WÄHLEN", RED),
+    "failed": ("● NICHT ANGEKOMMEN", RED),
 }
+BLINKING_TITLES = {"choose_target", "failed"}
 
 
 def _mix(color_a: str, color_b: str, amount: float) -> str:
@@ -97,10 +100,9 @@ class Overlay:
                 for widget in (frame, dot, text):
                     widget.bind("<Button-1>",
                                 lambda _e, p=pid:
-                                self._daemon.registry.select(p))
+                                self._daemon.select_target(p))
                 rows[pid] = (frame, dot, text)
 
-            add_row("Auto (letzter Fokus)", 0)
             for info in sorted(sessions, key=lambda s: s["label"].lower()):
                 add_row(f"{info['label']}  ({info['pid']})", info["pid"])
             if not sessions:
@@ -154,8 +156,18 @@ class Overlay:
                 dot.configure(bg=bg, fg=dot_fg)
                 text.configure(bg=bg, fg=fg)
 
-            title_text, title_fg = TITLES.get(state["phase"], TITLES["idle"])
+            phase = state["phase"]
+            title_text, title_fg = TITLES.get(phase, TITLES["idle"])
+            blink_on = int(time.monotonic() / 0.3) % 2 == 0
+            if phase in BLINKING_TITLES and not blink_on:
+                title_fg = FG
             title.configure(text=title_text, fg=title_fg)
+            # delivery failure: the whole window frame blinks red/white
+            if phase == "failed":
+                fast_on = int(time.monotonic() / 0.2) % 2 == 0
+                root.configure(bg=RED if fast_on else "white")
+            else:
+                root.configure(bg=BG)
 
         paint()
         root.mainloop()

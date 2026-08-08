@@ -8,6 +8,7 @@ import ctypes.wintypes
 import logging
 import sys
 import threading
+import winsound
 
 from . import http_api
 from .config import Config, config_dir
@@ -41,9 +42,16 @@ class Daemon:
             self.tracker.pin(hwnd)
         return hwnd
 
+    @staticmethod
+    def _beep(frequency: int) -> None:
+        """Audible cue, off the hotkey thread so nothing ever blocks it."""
+        threading.Thread(target=winsound.Beep, args=(frequency, 120),
+                         daemon=True).start()
+
     def toggle(self) -> None:
         if self.recorder.recording:
             audio = self.recorder.stop()
+            self._beep(520)                # low beep: stopped, transcribing
             log.info("recording stopped (%.1fs), transcribing...",
                      audio.size / 16_000)
             threading.Thread(target=self._finish, args=(audio,),
@@ -51,6 +59,7 @@ class Daemon:
         else:
             self.speaker.interrupt()       # talking to Claude cuts Claude off
             self.recorder.start()
+            self._beep(880)                # high beep: recording now
             log.info("recording started")
 
     def _finish(self, audio) -> None:

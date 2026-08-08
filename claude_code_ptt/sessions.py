@@ -113,8 +113,18 @@ class SessionRegistry:
             return [dict(info) for info in self._sessions.values()]
 
     def select(self, pid: int) -> None:
-        """Overlay click: pin this session as the PTT target (0 = auto)."""
+        """Overlay click: pin this session as the PTT target."""
         self.selected_pid = pid
+
+    def effective_pid(self) -> int:
+        """The acting target: the clicked session - or, when exactly one
+        session exists, that one automatically."""
+        with self._lock:
+            if self.selected_pid in self._sessions:
+                return self.selected_pid
+            if len(self._sessions) == 1:
+                return next(iter(self._sessions))
+        return 0
 
     def unregister(self, pid: int) -> None:
         """Session closes: drop it; a pinned target falls back to auto."""
@@ -127,8 +137,9 @@ class SessionRegistry:
 
     @property
     def selected_hwnd(self) -> int:
+        pid = self.effective_pid()
         with self._lock:
-            info = self._sessions.get(self.selected_pid)
+            info = self._sessions.get(pid)
         if not info:
             return 0
         if not info["hwnd"] or not user32.IsWindow(info["hwnd"]):

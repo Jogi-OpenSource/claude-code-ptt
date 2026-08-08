@@ -118,8 +118,8 @@ class Overlay:
 
         def _paint_once():
             sessions = self._daemon.registry.list()
-            selected = self._daemon.registry.selected_pid
             state = self._daemon.ui_state()
+            selected = state["highlight_pid"]
 
             nonlocal structure
             new_structure = sorted(s["pid"] for s in sessions)

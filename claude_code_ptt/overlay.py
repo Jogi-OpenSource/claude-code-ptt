@@ -24,6 +24,15 @@ RED = "#ff5252"
 ORANGE = "#ff9d3c"
 TICK_MS = 100
 
+# title text + color per phase
+TITLES = {
+    "idle": ("● PTT", ACCENT),
+    "recording": ("● REC", RED),
+    "transcribing": ("● TRANSKRIPTION", ORANGE),
+    "sending": ("● SENDE", ORANGE),
+    "flash": ("● ANGEKOMMEN", ORANGE),
+}
+
 
 def _mix(color_a: str, color_b: str, amount: float) -> str:
     """Blend two #rrggbb colors; amount 0 = a, 1 = b."""
@@ -133,16 +142,20 @@ class Overlay:
                 elif is_target and state["phase"] == "transcribing":
                     bg = _mix(ROW_BG, ORANGE, pulse)
                     fg, dot_fg, border = "white", "white", bg
+                elif is_target and state["phase"] == "sending":
+                    # fast orange blink while the text is being delivered
+                    on = int(time.monotonic() / 0.15) % 2 == 0
+                    bg = ORANGE if on else ROW_BG
+                    fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "flash":
-                    bg, fg, dot_fg, border = ORANGE, "black", ORANGE, ORANGE
+                    bg, fg, dot_fg, border = ORANGE, "white", "white", ORANGE
 
                 frame.configure(bg=bg, highlightbackground=border)
                 dot.configure(bg=bg, fg=dot_fg)
                 text.configure(bg=bg, fg=fg)
 
-            title.configure(
-                fg=RED if state["phase"] == "recording" else ACCENT,
-                text="● REC" if state["phase"] == "recording" else "● PTT")
+            title_text, title_fg = TITLES.get(state["phase"], TITLES["idle"])
+            title.configure(text=title_text, fg=title_fg)
 
         paint()
         root.mainloop()

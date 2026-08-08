@@ -41,6 +41,7 @@ class Daemon:
                                hold_while=lambda: self.recorder.recording)
         self.registry = SessionRegistry()
         self._transcribing = 0
+        self._sending = 0
         self._flash_until = 0.0
         Overlay(self)
 
@@ -52,6 +53,8 @@ class Daemon:
         """Snapshot for the overlay: current phase + which row to highlight."""
         if self.recorder.recording:
             phase = "recording"
+        elif self._sending:                # checked first: it nests inside
+            phase = "sending"              # the transcribing span
         elif self._transcribing:
             phase = "transcribing"
         elif time.monotonic() < self._flash_until:
@@ -101,13 +104,18 @@ class Daemon:
                 play_cue("error")
                 log.info("empty transcript, nothing to inject")
                 return
-            target = self.target_hwnd()
-            if inject_text(target, MIC_PREFIX + text):
-                self._flash_until = time.monotonic() + 1.0
-                log.info("injected %d chars into hwnd %d", len(text), target)
-            else:
-                play_cue("error")
-                log.warning("no Claude Code window found to inject into")
+            self._sending += 1
+            try:
+                target = self.target_hwnd()
+                if inject_text(target, MIC_PREFIX + text):
+                    self._flash_until = time.monotonic() + 2.0
+                    log.info("injected %d chars into hwnd %d",
+                             len(text), target)
+                else:
+                    play_cue("error")
+                    log.warning("no Claude Code window found to inject into")
+            finally:
+                self._sending -= 1
         finally:
             self._transcribing -= 1
 

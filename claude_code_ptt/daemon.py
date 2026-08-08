@@ -13,7 +13,9 @@ from . import http_api
 from .config import Config, config_dir
 from .cues import play_cue
 from .injector import TargetTracker, inject_text
+from .overlay import Overlay
 from .recorder import Recorder
+from .sessions import SessionRegistry
 from .speaker import Speaker
 from .transcriber import Transcriber
 
@@ -36,6 +38,12 @@ class Daemon:
         self.tracker = TargetTracker(config.window_title_markers)
         self.speaker = Speaker(config.tts_voice,
                                hold_while=lambda: self.recorder.recording)
+        self.registry = SessionRegistry()
+        Overlay(self.registry, self.recorder)
+
+    def target_hwnd(self) -> int:
+        """Overlay selection wins; otherwise focus tracking."""
+        return self.registry.selected_hwnd or self.tracker.target
 
     def pin_foreground(self) -> int:
         hwnd = user32.GetForegroundWindow()
@@ -67,7 +75,7 @@ class Daemon:
             play_cue("error")
             log.info("empty transcript, nothing to inject")
             return
-        target = self.tracker.target
+        target = self.target_hwnd()
         if inject_text(target, MIC_PREFIX + text):
             log.info("injected %d chars into hwnd %d", len(text), target)
         else:

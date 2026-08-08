@@ -2,8 +2,11 @@
 
 Endpoints (JSON):
   GET  /status          -> {recording, speaking, target, version}
+  GET  /sessions        -> registered sessions
   POST /speak           -> body {"text": ...}; queues TTS playback
   POST /interrupt       -> stops TTS playback
+  POST /register        -> body {"pid": ..., "cwd": ...}; session announces itself
+  POST /heartbeat       -> body {"pid": ...}; keeps a registration alive
   POST /pin-foreground  -> pins the current foreground window as target
   POST /unpin           -> back to automatic focus tracking
 """
@@ -46,9 +49,11 @@ def make_handler(daemon):
                 self._send(200, {
                     "recording": daemon.recorder.recording,
                     "speaking": daemon.speaker.playing,
-                    "target": daemon.tracker.target,
+                    "target": daemon.target_hwnd(),
                     "version": __version__,
                 })
+            elif self.path == "/sessions":
+                self._send(200, daemon.registry.list())
             else:
                 self._send(404, {"error": "unknown path"})
 
@@ -63,6 +68,20 @@ def make_handler(daemon):
             elif self.path == "/interrupt":
                 daemon.speaker.interrupt()
                 self._send(200, {"ok": True})
+            elif self.path == "/register":
+                body = self._body()
+                pid = int(body.get("pid") or 0)
+                cwd = str(body.get("cwd") or "")
+                if not pid:
+                    self._send(400, {"error": "missing 'pid'"})
+                    return
+                info = daemon.registry.register(pid, cwd)
+                self._send(200, {"ok": True, "session": info})
+            elif self.path == "/heartbeat":
+                pid = int(self._body().get("pid") or 0)
+                # always 200: "unknown" tells the adapter to re-register,
+                # a 4xx would surface as an exception there instead
+                self._send(200, {"ok": daemon.registry.heartbeat(pid)})
             elif self.path == "/pin-foreground":
                 hwnd = daemon.pin_foreground()
                 self._send(200, {"ok": bool(hwnd), "target": hwnd})

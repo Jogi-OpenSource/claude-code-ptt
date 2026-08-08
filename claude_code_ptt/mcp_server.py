@@ -5,8 +5,10 @@ Install once, valid for every session of the user:
 
 Starts the daemon automatically if it is not running yet.
 """
+import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -77,8 +79,34 @@ def ptt_status() -> dict:
     return _request("/status")
 
 
+def _register_session() -> None:
+    """Announce this session to the daemon and keep it alive with heartbeats.
+
+    The floating overlay lists every registered session; a dead adapter stops
+    heartbeating and the session drops out of the list automatically.
+    """
+    payload = {"pid": os.getpid(), "cwd": os.getcwd()}
+
+    def loop():
+        while True:
+            try:
+                known = _request("/heartbeat", {"pid": payload["pid"]})
+                if not known.get("ok"):
+                    _request("/register", payload)
+            except (urllib.error.URLError, OSError):
+                pass                        # daemon restarts re-register us
+            time.sleep(10)
+
+    try:
+        _request("/register", payload)
+    except (urllib.error.URLError, OSError):
+        pass
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def main() -> None:
     _ensure_daemon()
+    _register_session()
     mcp.run()
 
 

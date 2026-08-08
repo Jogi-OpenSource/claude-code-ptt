@@ -131,7 +131,8 @@ class Overlay:
                     bg = _mix(ROW_BG, RED, pulse)
                     fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "transcribing":
-                    fg = _mix("#8a5a2a", ORANGE, pulse)
+                    bg = _mix(ROW_BG, ORANGE, pulse)
+                    fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "flash":
                     bg, fg, dot_fg, border = ORANGE, "black", ORANGE, ORANGE
 

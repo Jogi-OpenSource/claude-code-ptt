@@ -76,6 +76,9 @@ class Daemon:
     def toggle(self) -> None:
         if self.recorder.recording:
             audio = self.recorder.stop()
+            # set BEFORE the worker starts: the overlay must never show a
+            # blue idle gap between recording stop and transcription start
+            self._transcribing += 1
             play_cue("record_stop")
             log.info("recording stopped (%.1fs), transcribing...",
                      audio.size / 16_000)
@@ -88,7 +91,6 @@ class Daemon:
             log.info("recording started")
 
     def _finish(self, audio) -> None:
-        self._transcribing += 1
         try:
             try:
                 text = self.transcriber.transcribe(audio)

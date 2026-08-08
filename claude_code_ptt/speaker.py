@@ -21,10 +21,16 @@ def _mci(command: str) -> None:
 
 
 class Speaker:
-    """Queued, interruptible text-to-speech playback."""
+    """Queued, interruptible text-to-speech playback.
 
-    def __init__(self, voice: str):
+    `hold_while` (optional callable) gates playback: as long as it returns
+    True (e.g. while the mic is recording), queued speech waits instead of
+    talking over the user.
+    """
+
+    def __init__(self, voice: str, hold_while=None):
         self.voice = voice
+        self._hold_while = hold_while or (lambda: False)
         self._queue: queue.Queue[str] = queue.Queue()
         self._interrupt = threading.Event()
         self._playing = threading.Event()
@@ -78,6 +84,10 @@ class Speaker:
             path = None
             try:
                 path = self._synthesize(text)
+                while self._hold_while() and not self._interrupt.is_set():
+                    threading.Event().wait(0.1)
+                if self._interrupt.is_set():
+                    continue
                 self._play(path)
             except Exception:              # noqa: BLE001
                 log.exception("TTS failed")

@@ -34,7 +34,8 @@ class Daemon:
         self.recorder = Recorder()
         self.transcriber = Transcriber(config.whisper_model, config.language)
         self.tracker = TargetTracker(config.window_title_markers)
-        self.speaker = Speaker(config.tts_voice)
+        self.speaker = Speaker(config.tts_voice,
+                               hold_while=lambda: self.recorder.recording)
 
     def pin_foreground(self) -> int:
         hwnd = user32.GetForegroundWindow()

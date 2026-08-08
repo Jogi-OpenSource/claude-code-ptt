@@ -1,0 +1,26 @@
+# Internal workflow files (local only, never published)
+CLAUDE.md
+Claude-Memory.md
+TODO.md
+FIXED-BUGS.md
+plans/
+.Claude-*.md
+.*-notes.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Runtime artifacts
+*.log

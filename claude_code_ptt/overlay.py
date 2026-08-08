@@ -21,8 +21,20 @@ FG = "#d7e0ea"
 ACCENT = "#2c7df0"
 ROW_BG = "#1a2129"
 RED = "#ff5252"
+DARK_RED = "#5a1f1f"
 ORANGE = "#ff9d3c"
 TICK_MS = 100
+
+# Temporary style picker: five candidate recording looks rendered as demo
+# rows that all animate during a real recording. Jogi picks one, the winner
+# becomes the single recording style and this block gets removed.
+DEMO_STYLES = [
+    "Stil 1: Hintergrund atmet rot",
+    "Stil 2: alles statisch rot",
+    "Stil 3: Rahmen atmet rot",
+    "Stil 4: dunkelroter Grund",
+    "Stil 5: nur Punkt atmet",
+]
 
 
 def _mix(color_a: str, color_b: str, amount: float) -> str:
@@ -85,10 +97,11 @@ class Overlay:
                                 bg=ROW_BG, fg=FG, pady=3,
                                 font=("Segoe UI", 9))
                 text.pack(side="left", fill="x", expand=True)
-                for widget in (frame, dot, text):
-                    widget.bind("<Button-1>",
-                                lambda _e, p=pid:
-                                self._daemon.registry.select(p))
+                if pid >= 0:               # demo rows are display-only
+                    for widget in (frame, dot, text):
+                        widget.bind("<Button-1>",
+                                    lambda _e, p=pid:
+                                    self._daemon.registry.select(p))
                 rows[pid] = (frame, dot, text)
 
             add_row("Auto (letzter Fokus)", 0)
@@ -97,6 +110,10 @@ class Overlay:
             if not sessions:
                 tk.Label(rows_frame, text="keine Sessions", bg=BG,
                          fg="#5a6672", font=("Segoe UI", 8)).pack(pady=2)
+            tk.Label(rows_frame, text="Aufnahme-Stile (Demo)", bg=BG,
+                     fg="#5a6672", font=("Segoe UI", 8)).pack(pady=(6, 1))
+            for style_no, style_label in enumerate(DEMO_STYLES, start=1):
+                add_row(style_label, -style_no)
 
         def paint():
             sessions = self._daemon.registry.list()
@@ -110,6 +127,8 @@ class Overlay:
                 build_rows(sessions)
 
             highlight = state["highlight_pid"]
+            recording = state["phase"] == "recording"
+            pulse = (math.sin(time.monotonic() * 2 * math.pi / 1.2) + 1) / 2
             for pid, (frame, dot, text) in rows.items():
                 is_selected = pid == selected
                 is_target = pid == highlight
@@ -117,11 +136,25 @@ class Overlay:
                 base_fg = "white" if is_selected else FG
                 bg, fg, dot_fg, border = base_bg, base_fg, base_bg, base_bg
 
-                if is_target and state["phase"] == "recording":
+                if pid < 0:                # demo rows mirror the styles live
+                    style = -pid
+                    if recording:
+                        if style == 1:
+                            bg = _mix(ROW_BG, RED, pulse)
+                            fg, dot_fg, border = "white", "white", bg
+                        elif style == 2:
+                            fg, dot_fg, border = RED, RED, RED
+                        elif style == 3:
+                            border = _mix(ROW_BG, RED, pulse)
+                        elif style == 4:
+                            bg = DARK_RED
+                            fg, border = "white", DARK_RED
+                            dot_fg = _mix("white", RED, pulse)
+                        elif style == 5:
+                            dot_fg = _mix(ROW_BG, RED, pulse)
+                elif is_target and recording:
                     dot_fg, border, fg = RED, RED, RED
                 elif is_target and state["phase"] == "transcribing":
-                    pulse = (math.sin(time.monotonic() * 2 * math.pi / 1.6)
-                             + 1) / 2
                     fg = _mix("#8a5a2a", ORANGE, pulse)
                 elif is_target and state["phase"] == "flash":
                     bg, fg, dot_fg, border = ORANGE, "black", ORANGE, ORANGE

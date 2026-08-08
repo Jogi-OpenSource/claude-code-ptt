@@ -71,6 +71,7 @@ class Daemon:
         if inject_text(target, MIC_PREFIX + text):
             log.info("injected %d chars into hwnd %d", len(text), target)
         else:
+            play_cue("error")
             log.warning("no Claude Code window found to inject into")
 
     def run(self) -> None:

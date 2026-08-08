@@ -63,7 +63,24 @@ class TargetTracker:
         self._markers = [m.lower() for m in title_markers]
         self._last_match = 0
         self._pinned = 0
+        self._scan_existing()              # no dead phase after daemon start
         threading.Thread(target=self._poll, daemon=True).start()
+
+    def _scan_existing(self) -> None:
+        """Adopt an already-open matching window as the initial target."""
+        matches = []
+
+        @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+        def on_window(hwnd, _lparam):
+            if user32.IsWindowVisible(hwnd):
+                title = _window_title(hwnd).lower()
+                if any(m in title for m in self._markers):
+                    matches.append(hwnd)
+            return True
+
+        user32.EnumWindows(on_window, 0)
+        if matches:
+            self._last_match = matches[0]
 
     def pin(self, hwnd: int) -> None:
         self._pinned = hwnd

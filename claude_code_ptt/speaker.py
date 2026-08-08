@@ -1,0 +1,87 @@
+"""Spoken replies: edge-tts synthesis, played through Windows MCI (mp3-capable,
+no extra audio dependencies)."""
+import asyncio
+import ctypes
+import logging
+import queue
+import tempfile
+import threading
+import uuid
+from pathlib import Path
+
+winmm = ctypes.windll.winmm
+
+log = logging.getLogger("claude_code_ptt")
+
+
+def _mci(command: str) -> None:
+    error = winmm.mciSendStringW(command, None, 0, None)
+    if error:
+        raise OSError(f"MCI error {error} for: {command}")
+
+
+class Speaker:
+    """Queued, interruptible text-to-speech playback."""
+
+    def __init__(self, voice: str):
+        self.voice = voice
+        self._queue: queue.Queue[str] = queue.Queue()
+        self._interrupt = threading.Event()
+        self._playing = threading.Event()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    @property
+    def playing(self) -> bool:
+        return self._playing.is_set()
+
+    def speak(self, text: str) -> None:
+        """Queue text for playback; returns immediately."""
+        self._queue.put(text)
+
+    def interrupt(self) -> None:
+        """Stop current playback and drop everything still queued."""
+        self._interrupt.set()
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _synthesize(self, text: str) -> Path:
+        import edge_tts
+        path = Path(tempfile.gettempdir()) / f"ccptt-{uuid.uuid4().hex}.mp3"
+        communicate = edge_tts.Communicate(text, self.voice)
+        asyncio.run(communicate.save(str(path)))
+        return path
+
+    def _play(self, path: Path) -> None:
+        alias = f"ccptt_{uuid.uuid4().hex[:8]}"
+        _mci(f'open "{path}" type mpegvideo alias {alias}')
+        try:
+            _mci(f"play {alias}")
+            status = ctypes.create_unicode_buffer(32)
+            while True:
+                if self._interrupt.is_set():
+                    break
+                winmm.mciSendStringW(f"status {alias} mode", status, 32, None)
+                if status.value != "playing":
+                    break
+                threading.Event().wait(0.1)
+        finally:
+            _mci(f"close {alias}")
+
+    def _worker(self) -> None:
+        while True:
+            text = self._queue.get()
+            self._interrupt.clear()
+            self._playing.set()
+            path = None
+            try:
+                path = self._synthesize(text)
+                self._play(path)
+            except Exception:              # noqa: BLE001
+                log.exception("TTS failed")
+            finally:
+                self._playing.clear()
+                if path is not None:
+                    path.unlink(missing_ok=True)

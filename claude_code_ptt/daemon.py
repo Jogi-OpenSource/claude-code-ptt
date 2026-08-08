@@ -4,13 +4,16 @@ Single instance per machine. Owns the global hotkey (default Ctrl+M) and the
 microphone; the MCP adapter talks to it over localhost HTTP (Phase 2).
 """
 import ctypes
+import ctypes.wintypes
 import logging
 import sys
 import threading
 
+from . import http_api
 from .config import Config, config_dir
 from .injector import TargetTracker, inject_text
 from .recorder import Recorder
+from .speaker import Speaker
 from .transcriber import Transcriber
 
 user32 = ctypes.windll.user32
@@ -30,6 +33,13 @@ class Daemon:
         self.recorder = Recorder()
         self.transcriber = Transcriber(config.whisper_model, config.language)
         self.tracker = TargetTracker(config.window_title_markers)
+        self.speaker = Speaker(config.tts_voice)
+
+    def pin_foreground(self) -> int:
+        hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            self.tracker.pin(hwnd)
+        return hwnd
 
     def toggle(self) -> None:
         if self.recorder.recording:
@@ -39,6 +49,7 @@ class Daemon:
             threading.Thread(target=self._finish, args=(audio,),
                              daemon=True).start()
         else:
+            self.speaker.interrupt()       # talking to Claude cuts Claude off
             self.recorder.start()
             log.info("recording started")
 
@@ -68,6 +79,7 @@ class Daemon:
                       "change it in %s", "+".join(self.config.hotkey_modifiers),
                       self.config.hotkey_key, config_dir() / "config.json")
             sys.exit(1)
+        http_api.start(self, self.config.daemon_port)
         log.info("ready - hotkey %s+%s toggles recording",
                  "+".join(self.config.hotkey_modifiers),
                  self.config.hotkey_key)

@@ -10,10 +10,12 @@ dependencies = [
     "sounddevice>=0.4",
     "numpy>=1.24",
     "edge-tts>=6.1",
+    "mcp>=1.0",
 ]
 
 [project.scripts]
 claude-code-ptt = "claude_code_ptt.daemon:main"
+claude-code-ptt-mcp = "claude_code_ptt.mcp_server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

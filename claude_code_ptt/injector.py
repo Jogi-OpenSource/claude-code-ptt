@@ -216,6 +216,13 @@ def inject_text(hwnd: int, text: str, press_enter: bool = True) -> bool:
                 _key(VK_V, KEYEVENTF_KEYUP),
                 _key(VK_CONTROL, KEYEVENTF_KEYUP)])
     time.sleep(0.15)
+    # "proven delivery": focus must have stayed on the target the whole time
+    # between paste and enter - otherwise the paste may have gone elsewhere,
+    # so no Enter is sent and the caller reports failure instead of success.
+    if user32.GetForegroundWindow() != hwnd:
+        log.warning("focus stolen between paste and enter, aborting")
+        _clipboard_set(old_clipboard)
+        return False
     if press_enter:
         _send_keys([_key(VK_RETURN), _key(VK_RETURN, KEYEVENTF_KEYUP)])
 

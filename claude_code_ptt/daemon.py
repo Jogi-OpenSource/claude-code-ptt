@@ -8,6 +8,7 @@ import ctypes.wintypes
 import logging
 import sys
 import threading
+import time
 
 from . import http_api
 from .config import Config, config_dir
@@ -39,11 +40,32 @@ class Daemon:
         self.speaker = Speaker(config.tts_voice,
                                hold_while=lambda: self.recorder.recording)
         self.registry = SessionRegistry()
-        Overlay(self.registry, self.recorder)
+        self._transcribing = 0
+        self._flash_until = 0.0
+        Overlay(self)
 
     def target_hwnd(self) -> int:
         """Overlay selection wins; otherwise focus tracking."""
         return self.registry.selected_hwnd or self.tracker.target
+
+    def ui_state(self) -> dict:
+        """Snapshot for the overlay: current phase + which row to highlight."""
+        if self.recorder.recording:
+            phase = "recording"
+        elif self._transcribing:
+            phase = "transcribing"
+        elif time.monotonic() < self._flash_until:
+            phase = "flash"
+        else:
+            phase = "idle"
+        highlight = self.registry.selected_pid
+        if not highlight:
+            hwnd = self.tracker.target
+            for info in self.registry.list():
+                if info["hwnd"] == hwnd:
+                    highlight = info["pid"]
+                    break
+        return {"phase": phase, "highlight_pid": highlight}
 
     def pin_foreground(self) -> int:
         hwnd = user32.GetForegroundWindow()
@@ -66,21 +88,26 @@ class Daemon:
             log.info("recording started")
 
     def _finish(self, audio) -> None:
+        self._transcribing += 1
         try:
-            text = self.transcriber.transcribe(audio)
-        except Exception:                  # noqa: BLE001
-            log.exception("transcription failed")
-            return
-        if not text:
-            play_cue("error")
-            log.info("empty transcript, nothing to inject")
-            return
-        target = self.target_hwnd()
-        if inject_text(target, MIC_PREFIX + text):
-            log.info("injected %d chars into hwnd %d", len(text), target)
-        else:
-            play_cue("error")
-            log.warning("no Claude Code window found to inject into")
+            try:
+                text = self.transcriber.transcribe(audio)
+            except Exception:              # noqa: BLE001
+                log.exception("transcription failed")
+                return
+            if not text:
+                play_cue("error")
+                log.info("empty transcript, nothing to inject")
+                return
+            target = self.target_hwnd()
+            if inject_text(target, MIC_PREFIX + text):
+                self._flash_until = time.monotonic() + 1.0
+                log.info("injected %d chars into hwnd %d", len(text), target)
+            else:
+                play_cue("error")
+                log.warning("no Claude Code window found to inject into")
+        finally:
+            self._transcribing -= 1
 
     def run(self) -> None:
         modifiers = 0

@@ -1,11 +1,18 @@
 """Floating always-on-top window listing all registered Claude Code sessions.
 
 One row per session; clicking a row pins it as the PTT target, clicking
-"Auto" returns to focus tracking. Runs entirely in its own thread (tkinter
-mainloop), reading the registry via polling - no cross-thread tk calls.
+"Auto" returns to focus tracking. The target row mirrors the PTT state:
+  recording      red dot + red frame on the row the text will land in
+  transcribing   the row text "breathes" orange (soft pulse, no blinking)
+  landed         the whole row flashes orange for one second, then normal
+
+Runs entirely in its own thread (tkinter mainloop), polling daemon state -
+no cross-thread tk calls.
 """
 import logging
+import math
 import threading
+import time
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -13,12 +20,22 @@ BG = "#101418"
 FG = "#d7e0ea"
 ACCENT = "#2c7df0"
 ROW_BG = "#1a2129"
+RED = "#ff5252"
+ORANGE = "#ff9d3c"
+TICK_MS = 100
+
+
+def _mix(color_a: str, color_b: str, amount: float) -> str:
+    """Blend two #rrggbb colors; amount 0 = a, 1 = b."""
+    a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(color_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}"
+                         for x, y in zip(a, b))
 
 
 class Overlay:
-    def __init__(self, registry, recorder):
-        self._registry = registry
-        self._recorder = recorder
+    def __init__(self, daemon):
+        self._daemon = daemon
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self) -> None:
@@ -33,8 +50,7 @@ class Overlay:
         root.attributes("-topmost", True)
         root.overrideredirect(True)
         root.configure(bg=BG)
-        screen_w = root.winfo_screenwidth()
-        root.geometry(f"+{screen_w - 240}+40")
+        root.geometry(f"+{root.winfo_screenwidth() - 250}+40")
 
         title = tk.Label(root, text="● PTT", bg=BG, fg=ACCENT,
                          font=("Segoe UI", 10, "bold"), anchor="w")
@@ -42,48 +58,82 @@ class Overlay:
         rows_frame = tk.Frame(root, bg=BG)
         rows_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-        # window drag support (frameless window has no title bar)
         drag = {"x": 0, "y": 0}
+        title.bind("<Button-1>",
+                   lambda e: drag.update(x=e.x, y=e.y))
+        title.bind("<B1-Motion>",
+                   lambda e: root.geometry(f"+{e.x_root - drag['x']}"
+                                           f"+{e.y_root - drag['y']}"))
 
-        def on_press(event):
-            drag["x"], drag["y"] = event.x, event.y
+        rows: dict[int, tuple] = {}        # pid -> (frame, dot, text)
+        structure: list[tuple] = []
 
-        def on_drag(event):
-            root.geometry(f"+{event.x_root - drag['x']}"
-                          f"+{event.y_root - drag['y']}")
-
-        title.bind("<Button-1>", on_press)
-        title.bind("<B1-Motion>", on_drag)
-
-        def rebuild():
+        def build_rows(sessions, selected):
             for child in rows_frame.winfo_children():
                 child.destroy()
-            sessions = self._registry.list()
-            selected = self._registry.selected_pid
+            rows.clear()
 
-            def add_row(text, pid, active):
-                row = tk.Label(
-                    rows_frame, text=text, anchor="w", padx=8, pady=3,
-                    bg=ACCENT if active else ROW_BG,
-                    fg="white" if active else FG, font=("Segoe UI", 9))
-                row.pack(fill="x", pady=1)
-                row.bind("<Button-1>",
-                         lambda _e, p=pid: self._registry.select(p))
+            def add_row(label_text, pid):
+                frame = tk.Frame(rows_frame, bg=ROW_BG,
+                                 highlightthickness=2,
+                                 highlightbackground=ROW_BG)
+                frame.pack(fill="x", pady=1)
+                dot = tk.Label(frame, text="●", bg=ROW_BG, fg=ROW_BG,
+                               font=("Segoe UI", 9), padx=4)
+                dot.pack(side="left")
+                text = tk.Label(frame, text=label_text, anchor="w",
+                                bg=ROW_BG, fg=FG, pady=3,
+                                font=("Segoe UI", 9))
+                text.pack(side="left", fill="x", expand=True)
+                for widget in (frame, dot, text):
+                    widget.bind("<Button-1>",
+                                lambda _e, p=pid:
+                                self._daemon.registry.select(p))
+                rows[pid] = (frame, dot, text)
 
-            add_row("Auto (letzter Fokus)", 0, selected == 0)
+            add_row("Auto (letzter Fokus)", 0)
             for info in sorted(sessions, key=lambda s: s["label"].lower()):
-                add_row(f"{info['label']}  ({info['pid']})", info["pid"],
-                        info["pid"] == selected)
+                add_row(f"{info['label']}  ({info['pid']})", info["pid"])
             if not sessions:
                 tk.Label(rows_frame, text="keine Sessions", bg=BG,
                          fg="#5a6672", font=("Segoe UI", 8)).pack(pady=2)
 
-        def tick():
-            rebuild()
-            title.configure(
-                fg="#ff5252" if self._recorder.recording else ACCENT,
-                text="● REC" if self._recorder.recording else "● PTT")
-            root.after(1000, tick)
+        def paint():
+            sessions = self._daemon.registry.list()
+            selected = self._daemon.registry.selected_pid
+            state = self._daemon.ui_state()
 
-        tick()
+            nonlocal structure
+            new_structure = sorted(s["pid"] for s in sessions)
+            if (new_structure, ) != (structure, ):
+                structure = new_structure
+                build_rows(sessions, selected)
+
+            highlight = state["highlight_pid"]
+            for pid, (frame, dot, text) in rows.items():
+                is_selected = pid == selected
+                is_target = pid == highlight
+                base_bg = ACCENT if is_selected else ROW_BG
+                base_fg = "white" if is_selected else FG
+                bg, fg, dot_fg, border = base_bg, base_fg, base_bg, base_bg
+
+                if is_target and state["phase"] == "recording":
+                    dot_fg, border = RED, RED
+                elif is_target and state["phase"] == "transcribing":
+                    pulse = (math.sin(time.monotonic() * 2 * math.pi / 1.6)
+                             + 1) / 2
+                    fg = _mix("#8a5a2a", ORANGE, pulse)
+                elif is_target and state["phase"] == "flash":
+                    bg, fg, dot_fg, border = ORANGE, "black", ORANGE, ORANGE
+
+                frame.configure(bg=bg, highlightbackground=border)
+                dot.configure(bg=bg, fg=dot_fg)
+                text.configure(bg=bg, fg=fg)
+
+            title.configure(
+                fg=RED if state["phase"] == "recording" else ACCENT,
+                text="● REC" if state["phase"] == "recording" else "● PTT")
+            root.after(TICK_MS, paint)
+
+        paint()
         root.mainloop()

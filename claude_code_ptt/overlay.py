@@ -66,9 +66,9 @@ class Overlay:
                                            f"+{e.y_root - drag['y']}"))
 
         rows: dict[int, tuple] = {}        # pid -> (frame, dot, text)
-        structure: list[tuple] = []
+        structure: list | None = None      # None forces the initial build
 
-        def build_rows(sessions, selected):
+        def build_rows(sessions):
             for child in rows_frame.winfo_children():
                 child.destroy()
             rows.clear()
@@ -105,9 +105,9 @@ class Overlay:
 
             nonlocal structure
             new_structure = sorted(s["pid"] for s in sessions)
-            if (new_structure, ) != (structure, ):
+            if new_structure != structure:
                 structure = new_structure
-                build_rows(sessions, selected)
+                build_rows(sessions)
 
             highlight = state["highlight_pid"]
             for pid, (frame, dot, text) in rows.items():

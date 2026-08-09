@@ -13,6 +13,26 @@ function Sync-Path {
                 (Join-Path $env:USERPROFILE ".local\bin")
 }
 
+function Add-ToUserPath {
+    # Claude Code drops claude.exe in %USERPROFILE%\.local\bin without putting
+    # that directory on the persistent PATH, so a NEW console cannot find
+    # `claude` - and neither can the MCP adapter we are about to register.
+    param([string]$Directory)
+
+    if (-not (Test-Path $Directory)) { return }
+    $key = Get-Item "HKCU:\Environment"
+    # Read the RAW value: PowerShell would otherwise hand back an expanded
+    # string, and writing that back turns %VARS% in the user's PATH into
+    # literals for good.
+    $raw = $key.GetValue("Path", "", "DoNotExpandEnvironmentNames")
+    if (($raw -split ";" | ForEach-Object { $_.TrimEnd("\") }) -contains $Directory.TrimEnd("\")) {
+        return
+    }
+    $updated = ($raw.TrimEnd(";") + ";" + $Directory).TrimStart(";")
+    Set-ItemProperty -Path "HKCU:\Environment" -Name Path -Value $updated -Type ExpandString
+    Write-Host "Added $Directory to your PATH." -ForegroundColor Green
+}
+
 function Get-PythonVersion {
     # Windows ships a python.exe stub that opens the Store instead of running
     # anything, and it answers Get-Command - so ask the interpreter itself.
@@ -107,6 +127,7 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: Claude Code (claude) not found in PATH. Install it first: https://claude.com/claude-code" -ForegroundColor Red
     return
 }
+Add-ToUserPath (Join-Path $env:USERPROFILE ".local\bin")
 
 # Whisper runs on ctranslate2.dll, which links against the Microsoft Visual
 # C++ runtime. A fresh Windows does not ship it, and its absence surfaces much

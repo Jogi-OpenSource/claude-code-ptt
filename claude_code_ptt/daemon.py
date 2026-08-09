@@ -21,6 +21,7 @@ from . import http_api
 from .config import Config, config_dir
 from .cues import play_cue
 from .injector import inject_text
+from .mic_mute import MicMute
 from .overlay import Overlay
 from .recorder import Recorder
 from .sessions import SessionRegistry
@@ -44,6 +45,7 @@ class Daemon:
     def __init__(self, config: Config):
         self.config = config
         self.recorder = Recorder()
+        self.mic_mute = MicMute()
         self.transcriber = Transcriber(config.whisper_model, config.language)
         self.speaker = Speaker(config.tts_voice,
                                hold_while=lambda: self.recorder.recording)
@@ -95,6 +97,7 @@ class Daemon:
     def toggle(self) -> None:
         if self.recorder.recording:
             audio = self.recorder.stop()
+            self.mic_mute.restore()
             # set BEFORE the worker starts: the overlay must never show a
             # blue idle gap between recording stop and transcription start
             self._transcribing += 1
@@ -107,6 +110,7 @@ class Daemon:
             self.speaker.interrupt()       # talking to Claude cuts Claude off
             self._failed = False           # new attempt clears the fail state
             self._pending_text = None
+            self.mic_mute.open_for_recording()
             self.recorder.start()
             play_cue("record_start")
             log.info("recording started")

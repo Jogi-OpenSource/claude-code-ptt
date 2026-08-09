@@ -8,9 +8,31 @@ you picked in the floating overlay, prefixed with `[mic] `. Claude's replies
 can be spoken back to you with a free Microsoft Edge neural voice.
 
 > **Status: early development.** The core loop works (hotkey → record →
-> local Whisper → inject → delivery confirmation, spoken replies), but the
-> packaging and install story is not finished yet. Watch/star the repo if
-> you want to follow along.
+> local Whisper → inject → delivery confirmation, spoken replies).
+> Watch/star the repo if you want to follow along.
+
+## Install
+
+One line in PowerShell (needs Python 3.10+ and Claude Code installed):
+
+```powershell
+irm jogi-bantu.com/ptt | iex
+```
+
+Or manually, same result:
+
+```powershell
+python -m pip install https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip
+claude-code-ptt install
+```
+
+`claude-code-ptt install` registers the MCP server (`claude mcp add --scope
+user`) and adds the two delivery-confirmation hooks to
+`~/.claude/settings.json` (a backup is written next to it). It is
+idempotent — rerun it any time, e.g. after moving Python.
+
+Then start a **new** Claude Code session and press **Ctrl+M**. The first
+recording downloads the Whisper model (~0.5 GB), so give it a few minutes.
 
 ## How it works
 

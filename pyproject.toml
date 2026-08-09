@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claude-code-ptt = "claude_code_ptt.daemon:main"
+claude-code-ptt = "claude_code_ptt.cli:main"
 claude-code-ptt-mcp = "claude_code_ptt.mcp_server:main"
 
 [build-system]

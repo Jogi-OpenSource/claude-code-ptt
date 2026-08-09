@@ -35,18 +35,20 @@ class _ProcessEntry(ctypes.Structure):
     ]
 
 
-def _parent_map() -> dict[int, int]:
+def process_tree() -> dict[int, tuple[int, str]]:
+    """Snapshot of all processes: pid -> (parent pid, lowercased exe name)."""
     snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    parents: dict[int, int] = {}
+    tree: dict[int, tuple[int, str]] = {}
     entry = _ProcessEntry()
     entry.dwSize = ctypes.sizeof(_ProcessEntry)
     if kernel32.Process32First(snapshot, ctypes.byref(entry)):
         while True:
-            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            name = entry.szExeFile.decode("mbcs", errors="replace").lower()
+            tree[entry.th32ProcessID] = (entry.th32ParentProcessID, name)
             if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
                 break
     kernel32.CloseHandle(snapshot)
-    return parents
+    return tree
 
 
 def _window_of_pid(pid: int) -> int:
@@ -75,14 +77,19 @@ def window_title(hwnd: int) -> str:
     return buffer.value.strip()
 
 
+CONSOLE_HOSTS = {"conhost.exe", "openconsole.exe"}
+
+
 def find_session_window(pid: int) -> int:
-    """Walk the parent chain of pid until an ancestor - or one of an
-    ancestor's direct children - owns a visible top-level window. The child
-    check matters for classic consoles (cmd.exe): their visible window
-    belongs to a conhost.exe CHILD of the shell, never to an ancestor."""
-    parents = _parent_map()
+    """Walk the parent chain of pid until an ancestor - or a console-host
+    child of an ancestor - owns a visible top-level window. The child check
+    covers classic consoles (cmd.exe): their visible window belongs to a
+    conhost.exe CHILD of the shell, never to an ancestor. Only console
+    hosts qualify, anything else risks grabbing an unrelated helper window
+    (seen live: a 1x1 'ThumbnailDeviceHelperWnd' of an explorer child)."""
+    tree = process_tree()
     children: dict[int, list[int]] = {}
-    for child, parent in parents.items():
+    for child, (parent, _name) in tree.items():
         children.setdefault(parent, []).append(child)
     current = pid
     for _ in range(12):
@@ -90,11 +97,11 @@ def find_session_window(pid: int) -> int:
         if hwnd:
             return hwnd
         for child in children.get(current, []):
-            if child != pid:
+            if tree.get(child, (0, ""))[1] in CONSOLE_HOSTS:
                 hwnd = _window_of_pid(child)
                 if hwnd:
                     return hwnd
-        current = parents.get(current, 0)
+        current = tree.get(current, (0, ""))[0]
         if current in (0, 4):
             break
     return 0

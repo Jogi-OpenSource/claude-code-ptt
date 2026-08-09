@@ -30,6 +30,14 @@ mcp = FastMCP(
 
 _config = Config.load()
 _BASE = f"http://127.0.0.1:{_config.daemon_port}"
+_session_pid_cache = 0
+
+
+def _my_session_pid() -> int:
+    global _session_pid_cache
+    if not _session_pid_cache:
+        _session_pid_cache = _session_pid()
+    return _session_pid_cache
 
 
 def _request(path: str, payload: dict | None = None) -> dict:
@@ -69,7 +77,7 @@ def _ensure_daemon() -> None:
 def ptt_speak(text: str) -> str:
     """Speak text aloud to the user (queued, non-blocking)."""
     _ensure_daemon()
-    _request("/speak", {"text": text, "pid": os.getpid()})
+    _request("/speak", {"text": text, "pid": _my_session_pid()})
     return "queued"
 
 
@@ -80,13 +88,40 @@ def ptt_status() -> dict:
     return _request("/status")
 
 
+def _session_pid() -> int:
+    """PID of the Claude session this adapter belongs to.
+
+    Claude Code spawns the adapter as its child (possibly through launcher
+    wrappers). Walking up the OS process tree, every rung that is one of
+    OUR OWN executables gets skipped; the first foreign ancestor is the
+    session process itself. Falls back to the adapter's own pid."""
+    own = {"python.exe", "pythonw.exe", "claude-code-ptt-mcp.exe"}
+    try:
+        from .sessions import process_tree
+        tree = process_tree()
+        pid = os.getpid()
+        for _ in range(8):
+            parent, _ = tree.get(pid, (0, ""))
+            if not parent:
+                break
+            _, parent_name = tree.get(parent, (0, ""))
+            if parent_name not in own:
+                return parent
+            pid = parent
+    except Exception:                      # noqa: BLE001
+        pass
+    return os.getpid()
+
+
 def _register_session() -> None:
     """Announce this session to the daemon and keep it alive with heartbeats.
 
     The floating overlay lists every registered session; a dead adapter stops
-    heartbeating and the session drops out of the list automatically.
+    heartbeating and the session drops out of the list automatically. The
+    registered pid is the SESSION's (claude), not the adapter's - the window
+    search starts from it, and it is what the user identifies a session by.
     """
-    payload = {"pid": os.getpid(), "cwd": os.getcwd()}
+    payload = {"pid": _my_session_pid(), "cwd": os.getcwd()}
 
     def loop():
         while True:

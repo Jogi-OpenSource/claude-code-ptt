@@ -139,6 +139,18 @@ class SessionRegistry:
             log.info("turn state for unknown cwd %r (registered: %s)",
                      cwd, [i["cwd"] for i in self.list()])
 
+    def set_transcript(self, cwd: str, path: str) -> None:
+        """Transcript file of the session, reported by its hooks."""
+        with self._lock:
+            for info in self._sessions.values():
+                if self._cwd_matches(info["cwd"], cwd):
+                    info["transcript"] = path
+
+    def transcript_for(self, pid: int) -> str:
+        with self._lock:
+            info = self._sessions.get(pid)
+            return str(info.get("transcript") or "") if info else ""
+
     def session_for_cwd(self, cwd: str) -> dict | None:
         with self._lock:
             for info in self._sessions.values():

@@ -22,6 +22,8 @@ class Config:
     whisper_model: str = "small"
     # Language hint for Whisper ("" = autodetect).
     language: str = ""
+    # Phrases Whisper should be biased towards (e.g. command words).
+    whisper_hotwords: str = ""
     # edge-tts voice for spoken replies.
     tts_voice: str = "en-US-GuyNeural"
     # Daemon HTTP port for the MCP adapter (localhost only).

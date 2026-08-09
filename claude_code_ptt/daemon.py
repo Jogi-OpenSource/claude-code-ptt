@@ -50,7 +50,8 @@ class Daemon:
         self.config = config
         self.recorder = Recorder()
         self.mic_mute = MicMute()
-        self.transcriber = Transcriber(config.whisper_model, config.language)
+        self.transcriber = Transcriber(config.whisper_model, config.language,
+                                       config.whisper_hotwords)
         self.speaker = Speaker(config.tts_voice,
                                hold_while=lambda: self.recorder.recording)
         self.registry = SessionRegistry()
@@ -65,6 +66,8 @@ class Daemon:
         self._failed = False
         self._flash_until = 0.0
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
+        threading.Thread(target=self._transcript_watchdog,
+                         daemon=True).start()
         Overlay(self)
 
     def target_hwnd(self) -> int:
@@ -125,6 +128,13 @@ class Daemon:
             play_cue("record_start")
             log.info("recording started")
 
+    def _confirmed(self, source: str) -> None:
+        self._await_text = None
+        self._queued = False
+        self._failed = False
+        self._flash_until = time.monotonic() + FLASH_SECONDS
+        log.info("delivery confirmed %s", source)
+
     def confirm_received(self, prompt: str, cwd: str = "") -> bool:
         """Confirm hook reported a processed prompt; match it to our send."""
         sender = self.registry.session_for_cwd(cwd) if cwd else None
@@ -136,15 +146,31 @@ class Daemon:
                      "prompt head=%r)", sender_label, prompt[:60])
             return False
         if awaited[:60] in prompt:
-            self._await_text = None
-            self._queued = False
-            self._failed = False
-            self._flash_until = time.monotonic() + FLASH_SECONDS
-            log.info("delivery confirmed by %s", sender_label)
+            self._confirmed(f"by {sender_label}")
             return True
         log.warning("confirm MISMATCH: awaited=%r vs prompt head=%r",
                     awaited[:60], prompt[:80])
         return False
+
+    def _transcript_watchdog(self) -> None:
+        """Watch the target session's transcript while a send is awaiting:
+        an interjection shows up there the second it is queued, long before
+        the turn ends - that arrival already counts as delivered."""
+        from .turn_hook import _user_texts
+        while True:
+            time.sleep(1.0)
+            awaited = self._await_text
+            if awaited is None:
+                continue
+            path = self.registry.transcript_for(self._await_pid)
+            if not path:
+                continue
+            try:
+                texts = _user_texts(path)
+            except (OSError, ValueError):
+                continue
+            if any(awaited[:60] in text for text in texts[-12:]):
+                self._confirmed("via transcript (arrived in session queue)")
 
     def turn_idle(self) -> None:
         """Target turn ended: a queued prompt must confirm within the grace

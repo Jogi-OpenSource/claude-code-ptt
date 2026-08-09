@@ -43,8 +43,10 @@ def main() -> None:
             _note("empty prompt, nothing to report")
             return
         port = Config.load().daemon_port
-        body = json.dumps({"text": prompt, "cwd": hook_cwd(payload)},
-                          ensure_ascii=False).encode("utf-8")
+        body = json.dumps(
+            {"text": prompt, "cwd": hook_cwd(payload),
+             "transcript": str(payload.get("transcript_path") or "")},
+            ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/prompt-received", data=body,
             headers={"Content-Type": "application/json"})

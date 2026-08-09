@@ -5,9 +5,11 @@ import numpy as np
 class Transcriber:
     """Lazy-loads the Whisper model on first use (download can take a while)."""
 
-    def __init__(self, model_name: str, language: str = ""):
+    def __init__(self, model_name: str, language: str = "",
+                 hotwords: str = ""):
         self._model_name = model_name
         self._language = language or None
+        self._hotwords = hotwords or None
         self._model = None
 
     def _ensure_model(self):
@@ -21,5 +23,6 @@ class Transcriber:
         if audio.size == 0:
             return ""
         segments, _info = self._ensure_model().transcribe(
-            audio, language=self._language, vad_filter=True)
+            audio, language=self._language, vad_filter=True,
+            hotwords=self._hotwords)
         return " ".join(s.text.strip() for s in segments).strip()

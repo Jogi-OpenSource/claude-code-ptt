@@ -62,11 +62,13 @@ def main() -> None:
         if transcript_path:
             try:
                 for text in _user_texts(transcript_path)[-MAX_REPORTS:]:
-                    _post(port, "/prompt-received", {"text": text,
-                                                     "cwd": cwd})
+                    _post(port, "/prompt-received",
+                          {"text": text, "cwd": cwd,
+                           "transcript": transcript_path})
             except OSError:
                 pass                       # transcript unreadable: skip
-        _post(port, "/turn-state", {"cwd": cwd, "state": "idle"})
+        _post(port, "/turn-state", {"cwd": cwd, "state": "idle",
+                                    "transcript": transcript_path})
     except Exception as exc:               # noqa: BLE001
         _note(f"turn_hook FAILED: {exc!r}")
 

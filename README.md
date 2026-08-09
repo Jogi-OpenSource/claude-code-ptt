@@ -21,6 +21,10 @@ straight from this repo, so what you run is what you see in
 irm https://raw.githubusercontent.com/Jogi-OpenSource/claude-code-ptt/main/install.ps1 | iex
 ```
 
+It also installs the Microsoft Visual C++ runtime if your machine does not
+have it — Whisper's native library needs it, and a fresh Windows does not
+ship it.
+
 Or manually, same result:
 
 ```powershell

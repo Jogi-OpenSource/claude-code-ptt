@@ -28,6 +28,34 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     return
 }
 
+# Whisper runs on ctranslate2.dll, which links against the Microsoft Visual
+# C++ runtime. A fresh Windows does not ship it, and its absence surfaces much
+# later as "Could not find module ctranslate2.dll", which points nowhere.
+if (-not (Test-Path (Join-Path $env:SystemRoot "System32\msvcp140.dll"))) {
+    Write-Host "The Microsoft Visual C++ runtime is missing; Whisper needs it." -ForegroundColor Yellow
+    Write-Host "Installing it now - Windows will ask you for permission." -ForegroundColor Yellow
+    $redistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    $redistExe = Join-Path $env:TEMP "vc_redist.x64.exe"
+    try {
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            & curl.exe -L --fail --progress-bar -o $redistExe $redistUrl
+            if ($LASTEXITCODE -ne 0) { throw "download failed (curl $LASTEXITCODE)" }
+        } else {
+            Invoke-WebRequest $redistUrl -OutFile $redistExe
+        }
+        $redist = Start-Process $redistExe -Wait -PassThru -ArgumentList "/install","/passive","/norestart"
+        # 1638 = a newer runtime is already present, 3010 = installed, wants a reboot
+        if ($redist.ExitCode -notin 0, 1638, 3010) {
+            throw "installer exited with $($redist.ExitCode)"
+        }
+    } catch {
+        Write-Host "ERROR: could not install the Visual C++ runtime ($_)." -ForegroundColor Red
+        Write-Host "Install it manually from $redistUrl, then rerun this installer." -ForegroundColor Red
+        return
+    }
+    Write-Host "Visual C++ runtime installed." -ForegroundColor Green
+}
+
 Write-Host "Installing package. This downloads Whisper and its audio dependencies," -ForegroundColor Yellow
 Write-Host "several hundred MB, so expect a few minutes. Do not close this window." -ForegroundColor Yellow
 & python -m pip install --upgrade "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip"

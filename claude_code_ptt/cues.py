@@ -32,6 +32,10 @@ def _build(cue_type: str, sr: int) -> np.ndarray | None:
         tone2 = 0.45 * np.sin(2 * np.pi * 500 * t2)
         gap = np.zeros(int(sr * 0.04))
         return np.concatenate([tone1, gap, tone2])
+    if cue_type == "ready":
+        # short bright ping: Claude's turn ended, input counts again
+        t = np.linspace(0, 0.1, int(sr * 0.1), False)
+        return 0.4 * np.sin(2 * np.pi * 1568 * t)
     return None
 
 

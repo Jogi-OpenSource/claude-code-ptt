@@ -90,6 +90,10 @@ def make_handler(daemon):
             elif self.path == "/prompt-received":
                 text = str(self._body().get("text") or "")
                 self._send(200, {"ok": daemon.confirm_received(text)})
+            elif self.path == "/cue":
+                from .cues import play_cue
+                play_cue(str(self._body().get("type") or ""))
+                self._send(200, {"ok": True})
             else:
                 self._send(404, {"error": "unknown path"})
 

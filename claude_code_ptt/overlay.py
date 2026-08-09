@@ -153,9 +153,10 @@ class Overlay:
                 elif is_target and state["phase"] == "flash":
                     bg, fg, dot_fg, border = ORANGE, "white", "white", ORANGE
 
-                # a speaking session is green no matter what else is going on
+                # a speaking session breathes green no matter what else is on
                 if pid and pid == state["speaking_pid"]:
-                    bg, fg, dot_fg, border = GREEN, "white", "white", GREEN
+                    bg = _mix(ROW_BG, GREEN, pulse)
+                    fg, dot_fg, border = "white", "white", bg
 
                 frame.configure(bg=bg, highlightbackground=border)
                 dot.configure(bg=bg, fg=dot_fg)

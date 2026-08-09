@@ -22,7 +22,7 @@ mcp = FastMCP(
     "ptt",
     instructions=(
         "Push-to-talk voice server. The user toggles the microphone with a "
-        "global hotkey; transcripts arrive prefixed with a microphone emoji. "
+        "global hotkey; transcripts arrive prefixed with \"[mic] \". "
         "When you see such input, ALWAYS answer via the ptt_speak tool as "
         "well (short, spoken-style summary) in the language the user speaks."
     ),

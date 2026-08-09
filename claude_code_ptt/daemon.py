@@ -12,7 +12,9 @@ within CONFIRM_TIMEOUT means delivery failure ("NICHT ANGEKOMMEN").
 """
 import ctypes
 import ctypes.wintypes
+import faulthandler
 import logging
+import os
 import sys
 import threading
 import time
@@ -34,7 +36,7 @@ MOD_FLAGS = {"alt": 0x0001, "ctrl": 0x0002, "shift": 0x0004, "win": 0x0008}
 MOD_NOREPEAT = 0x4000
 WM_HOTKEY = 0x0312
 HOTKEY_ID = 1
-MIC_PREFIX = "\U0001F3A4 "                 # microphone emoji
+MIC_PREFIX = "[mic] "                      # ASCII: renders in every terminal
 CONFIRM_TIMEOUT = 8.0
 FLASH_SECONDS = 2.0
 
@@ -119,6 +121,8 @@ class Daemon:
         """Confirm hook reported a processed prompt; match it to our send."""
         awaited = self._await_text
         if awaited is None:
+            log.info("confirm ignored, nothing awaited (prompt head=%r)",
+                     prompt[:60])
             return False
         if awaited[:60] in prompt:
             self._await_text = None
@@ -126,6 +130,8 @@ class Daemon:
             self._flash_until = time.monotonic() + FLASH_SECONDS
             log.info("delivery confirmed by session")
             return True
+        log.warning("confirm MISMATCH: awaited=%r vs prompt head=%r",
+                    awaited[:60], prompt[:80])
         return False
 
     def _confirm_watchdog(self) -> None:
@@ -201,10 +207,26 @@ class Daemon:
 
 
 def main() -> None:
+    log_dir = config_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_dir / "daemon.log", encoding="utf-8"),
+        ],
     )
+    # Native crashes (access violations in ctypes/Win32 calls) kill the
+    # process without a Python traceback; faulthandler dumps the stacks of
+    # all threads to crash.log. The file object must stay referenced for
+    # the daemon's lifetime, so it is kept on the module.
+    global _crash_log
+    _crash_log = open(log_dir / "crash.log", "a", encoding="utf-8")
+    _crash_log.write(f"--- daemon start {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                     f" (pid={os.getpid()}) ---\n")
+    _crash_log.flush()
+    faulthandler.enable(_crash_log, all_threads=True)
     if sys.platform != "win32":
         log.error("claude-code-ptt currently supports Windows only")
         sys.exit(1)

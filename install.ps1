@@ -82,7 +82,15 @@ function Get-PythonVersion {
     # Windows ships a python.exe stub that opens the Store instead of running
     # anything, and it answers Get-Command - so ask the interpreter itself.
     if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $null }
-    $reported = & python -c "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>$null
+    # The stub answers on stderr, and with ErrorActionPreference "Stop" that
+    # alone aborts the whole installer - so this one call runs relaxed.
+    $reported = $null
+    try {
+        $ErrorActionPreference = "Continue"
+        $reported = & python -c "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>$null
+    } catch {
+        return $null
+    }
     if ($LASTEXITCODE -ne 0 -or -not $reported) { return $null }
     return [version]$reported
 }

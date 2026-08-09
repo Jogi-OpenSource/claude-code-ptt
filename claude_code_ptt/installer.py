@@ -33,7 +33,11 @@ HOOKS = {"Stop": "turn_hook", "UserPromptSubmit": "confirm_hook"}
 
 
 def _hook_command(module: str) -> str:
-    return f'"{sys.executable}" -m claude_code_ptt.{module}'
+    # Claude Code runs hooks through whichever shell it inherited. PowerShell
+    # treats a leading quoted path as a string literal, not a command, so the
+    # bare '"python.exe" -m ...' form dies with a parser error there. Routing
+    # through cmd /c starts the line with a bare token both shells execute.
+    return f'cmd /c ""{sys.executable}" -m claude_code_ptt.{module}"'
 
 
 def _merge_hook(settings: dict, event: str, module: str) -> str:

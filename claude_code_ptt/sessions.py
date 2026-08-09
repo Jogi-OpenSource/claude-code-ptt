@@ -5,6 +5,8 @@ keeps sending heartbeats; sessions without a heartbeat expire automatically.
 The terminal window of a session is found by walking its parent-process chain
 until an ancestor owns a visible top-level window.
 """
+from __future__ import annotations
+
 import ctypes
 import ctypes.wintypes as wt
 import logging
@@ -64,6 +66,15 @@ def _window_of_pid(pid: int) -> int:
     return found[0] if found else 0
 
 
+def window_title(hwnd: int) -> str:
+    """Current title bar text of a window ('' if none)."""
+    if not hwnd:
+        return ""
+    buffer = ctypes.create_unicode_buffer(128)
+    user32.GetWindowTextW(hwnd, buffer, 128)
+    return buffer.value.strip()
+
+
 def find_session_window(pid: int) -> int:
     """Walk the parent chain of pid until an ancestor owns a visible window."""
     parents = _parent_map()
@@ -111,8 +122,13 @@ class SessionRegistry:
             return True
 
     def list(self) -> list[dict]:
+        """Session snapshots, each with the live window title (the user
+        names their terminals - the overlay shows that name)."""
         with self._lock:
-            return [dict(info) for info in self._sessions.values()]
+            rows = [dict(info) for info in self._sessions.values()]
+        for row in rows:
+            row["title"] = window_title(row["hwnd"])[:60]
+        return rows
 
     @staticmethod
     def _norm_cwd(cwd: str) -> str:
@@ -120,31 +136,39 @@ class SessionRegistry:
         different casing or slashes than the adapter registered."""
         return os.path.normpath(cwd).casefold()
 
-    @classmethod
-    def _cwd_matches(cls, registered: str, reported: str) -> bool:
-        """A session's shell may cd into subfolders; a reported cwd inside
-        the registered project dir still belongs to that session."""
-        reg, rep = cls._norm_cwd(registered), cls._norm_cwd(reported)
-        return rep == reg or rep.startswith(reg + os.sep)
+    def _best_pids(self, reported: str) -> list[int]:
+        """Sessions a reported cwd belongs to. A session's shell may cd into
+        subfolders, so any registered cwd containing the reported path
+        matches - but only the most specific (longest) one wins, otherwise
+        a session started in a parent folder swallows its children's
+        reports. Call with the lock held."""
+        rep = self._norm_cwd(reported)
+        best_len = -1
+        best: list[int] = []
+        for pid, info in self._sessions.items():
+            reg = self._norm_cwd(info["cwd"])
+            if rep == reg or rep.startswith(reg + os.sep):
+                if len(reg) > best_len:
+                    best_len, best = len(reg), [pid]
+                elif len(reg) == best_len:
+                    best.append(pid)
+        return best
 
     def set_busy(self, cwd: str, busy: bool) -> None:
         """Turn state reported by the session's hooks, matched by cwd."""
         with self._lock:
-            matched = False
-            for info in self._sessions.values():
-                if self._cwd_matches(info["cwd"], cwd):
-                    info["busy"] = busy
-                    matched = True
-        if not matched:
+            pids = self._best_pids(cwd)
+            for pid in pids:
+                self._sessions[pid]["busy"] = busy
+        if not pids:
             log.info("turn state for unknown cwd %r (registered: %s)",
                      cwd, [i["cwd"] for i in self.list()])
 
     def set_transcript(self, cwd: str, path: str) -> None:
         """Transcript file of the session, reported by its hooks."""
         with self._lock:
-            for info in self._sessions.values():
-                if self._cwd_matches(info["cwd"], cwd):
-                    info["transcript"] = path
+            for pid in self._best_pids(cwd):
+                self._sessions[pid]["transcript"] = path
 
     def transcript_for(self, pid: int) -> str:
         with self._lock:
@@ -153,10 +177,8 @@ class SessionRegistry:
 
     def session_for_cwd(self, cwd: str) -> dict | None:
         with self._lock:
-            for info in self._sessions.values():
-                if self._cwd_matches(info["cwd"], cwd):
-                    return dict(info)
-        return None
+            pids = self._best_pids(cwd)
+            return dict(self._sessions[pids[0]]) if pids else None
 
     def is_busy(self, pid: int) -> bool:
         with self._lock:

@@ -47,6 +47,12 @@ def _mix(color_a: str, color_b: str, amount: float) -> str:
                          for x, y in zip(a, b))
 
 
+def _row_text(info: dict) -> str:
+    """The user's window title names the session; folder name as fallback."""
+    name = (info.get("title") or info["label"])[:38]
+    return f"{name}  ({info['pid']})"
+
+
 class Overlay:
     def __init__(self, daemon):
         self._daemon = daemon
@@ -106,7 +112,7 @@ class Overlay:
                 rows[pid] = (frame, dot, text)
 
             for info in sorted(sessions, key=lambda s: s["label"].lower()):
-                add_row(f"{info['label']}  ({info['pid']})", info["pid"])
+                add_row(_row_text(info), info["pid"])
             if not sessions:
                 tk.Label(rows_frame, text="keine Sessions", bg=BG,
                          fg="#5a6672", font=("Segoe UI", 8)).pack(pady=2)
@@ -132,7 +138,13 @@ class Overlay:
             highlight = state["highlight_pid"]
             recording = state["phase"] == "recording"
             pulse = (math.sin(time.monotonic() * 2 * math.pi / 1.2) + 1) / 2
+            info_by_pid = {s["pid"]: s for s in sessions}
             for pid, (frame, dot, text) in rows.items():
+                info = info_by_pid.get(pid)
+                if info is not None:
+                    wanted = _row_text(info)
+                    if text.cget("text") != wanted:   # live title changes
+                        text.configure(text=wanted)
                 is_selected = pid == selected
                 is_target = pid == highlight
                 base_bg = ACCENT if is_selected else ROW_BG

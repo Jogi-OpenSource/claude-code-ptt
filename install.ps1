@@ -18,12 +18,19 @@ if ([version]$version -lt [version]"3.10") {
     return
 }
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    # Claude Code installs into %USERPROFILE%\.local\bin, which a shell that was
+    # already open when Claude Code was installed does not have on its PATH yet.
+    $claudeBin = Join-Path $env:USERPROFILE ".local\bin"
+    if (Test-Path $claudeBin) { $env:Path += ";$claudeBin" }
+}
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: Claude Code (claude) not found in PATH. Install it first: https://claude.com/claude-code" -ForegroundColor Red
     return
 }
 
-Write-Host "Installing package (this pulls Whisper + audio dependencies)..."
-& python -m pip install --upgrade --quiet "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip"
+Write-Host "Installing package. This downloads Whisper and its audio dependencies," -ForegroundColor Yellow
+Write-Host "several hundred MB, so expect a few minutes. Do not close this window." -ForegroundColor Yellow
+& python -m pip install --upgrade "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: pip install failed (see output above)." -ForegroundColor Red
     return

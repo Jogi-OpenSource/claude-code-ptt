@@ -5,9 +5,12 @@ Idempotent: safe to run again after an update or a Python move - existing
 entries are updated in place, nothing is duplicated.
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 MCP_NAME = "jogi-ptt"
@@ -87,6 +90,34 @@ def _install_mcp() -> bool:
     return True
 
 
+def _cache_bytes(cache: str) -> int:
+    total = 0
+    for root, _dirs, names in os.walk(cache):
+        for name in names:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:                       # deleted mid-walk
+                continue
+    return total
+
+
+def _report_progress(cache: str, stop: threading.Event) -> None:
+    """Report the download by what lands on disk.
+
+    huggingface_hub prints nothing while it pulls half a gigabyte, and a
+    silent installer is the one users kill. Filenames are no help here - the
+    cache stores blobs under their hash - so report megabytes and rate.
+    """
+    base = _cache_bytes(cache)
+    start = time.monotonic()
+    while not stop.wait(1.0):
+        done = (_cache_bytes(cache) - base) / 1e6
+        seconds = time.monotonic() - start
+        line = f"  {done:,.0f} MB | {int(seconds)}s | {done / seconds:,.1f} MB/s"
+        print("\r" + line.ljust(60), end="", flush=True)
+    print("\r" + " " * 60 + "\r", end="", flush=True)
+
+
 def _model_cached(name: str) -> bool:
     try:
         from huggingface_hub import scan_cache_dir
@@ -112,12 +143,23 @@ def _fetch_model() -> bool:
         return True
     print(f"\nDownloading the Whisper model `{name}` (several hundred MB).")
     print("This is a one-off; progress is shown below.")
+    # HF_HOME, not HF_HUB_CACHE: the xet downloader stages its chunks in a
+    # sibling directory, so watching only `hub` shows nothing until the very
+    # end, when the finished file appears in one jump.
+    from huggingface_hub.constants import HF_HOME
+    stop = threading.Event()
+    reporter = threading.Thread(target=_report_progress,
+                                args=(HF_HOME, stop), daemon=True)
+    reporter.start()
     try:
         from faster_whisper import WhisperModel
         WhisperModel(name, device="cpu", compute_type="int8")
     except Exception as exc:                      # network, disk, bad model id
         print(f"  WARNING: download failed ({exc}).")
         return False
+    finally:
+        stop.set()
+        reporter.join(timeout=2)
     print(f"  model `{name}`: ready")
     return True
 

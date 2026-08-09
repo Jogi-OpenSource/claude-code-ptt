@@ -11,6 +11,8 @@ import ctypes
 import ctypes.wintypes as wt
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import PureWindowsPath
@@ -104,7 +106,28 @@ def find_session_window(pid: int) -> int:
         current = tree.get(current, (0, ""))[0]
         if current in (0, 4):
             break
-    return 0
+    return _console_window_probe(pid)
+
+
+def _console_window_probe(pid: int) -> int:
+    """Deterministic fallback: attach to the session's console and take the
+    owner of its (possibly hidden) console window - finds the real Windows
+    Terminal window even when it is unrelated to the session's ancestry.
+    Runs as a hidden helper process because attaching requires having no
+    console of one's own (the daemon keeps its log console)."""
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-m", "claude_code_ptt.console_window",
+             str(pid)],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        hwnd = int(probe.stdout.strip() or 0)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0
+    if hwnd:
+        log.info("window for pid %d resolved via console probe: %d",
+                 pid, hwnd)
+    return hwnd
 
 
 class SessionRegistry:

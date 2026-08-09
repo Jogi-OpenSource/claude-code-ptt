@@ -22,6 +22,7 @@ ACCENT = "#2c7df0"
 ROW_BG = "#1a2129"
 RED = "#ff5252"
 ORANGE = "#ff9d3c"
+GREEN = "#19c37d"
 TICK_MS = 100
 
 # title text + color per phase; blinking titles alternate color each 0.3s
@@ -151,6 +152,10 @@ class Overlay:
                     fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "flash":
                     bg, fg, dot_fg, border = ORANGE, "white", "white", ORANGE
+
+                # a speaking session is green no matter what else is going on
+                if pid and pid == state["speaking_pid"]:
+                    bg, fg, dot_fg, border = GREEN, "white", "white", GREEN
 
                 frame.configure(bg=bg, highlightbackground=border)
                 dot.configure(bg=bg, fg=dot_fg)

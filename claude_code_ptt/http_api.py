@@ -59,11 +59,12 @@ def make_handler(daemon):
 
         def do_POST(self):
             if self.path == "/speak":
-                text = str(self._body().get("text", "")).strip()
+                body = self._body()
+                text = str(body.get("text", "")).strip()
                 if not text:
                     self._send(400, {"error": "missing 'text'"})
                     return
-                daemon.speaker.speak(text)
+                daemon.speaker.speak(text, int(body.get("pid") or 0))
                 self._send(200, {"ok": True})
             elif self.path == "/interrupt":
                 daemon.speaker.interrupt()

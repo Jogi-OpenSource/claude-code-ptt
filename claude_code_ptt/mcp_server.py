@@ -69,7 +69,7 @@ def _ensure_daemon() -> None:
 def ptt_speak(text: str) -> str:
     """Speak text aloud to the user (queued, non-blocking)."""
     _ensure_daemon()
-    _request("/speak", {"text": text})
+    _request("/speak", {"text": text, "pid": os.getpid()})
     return "queued"
 
 

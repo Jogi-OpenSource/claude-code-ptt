@@ -31,18 +31,24 @@ class Speaker:
     def __init__(self, voice: str, hold_while=None):
         self.voice = voice
         self._hold_while = hold_while or (lambda: False)
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._interrupt = threading.Event()
         self._playing = threading.Event()
+        self._origin = 0                   # session pid currently speaking
         threading.Thread(target=self._worker, daemon=True).start()
 
     @property
     def playing(self) -> bool:
         return self._playing.is_set()
 
-    def speak(self, text: str) -> None:
+    @property
+    def speaking_origin(self) -> int:
+        """PID of the session whose text is playing right now (0 = none)."""
+        return self._origin if self._playing.is_set() else 0
+
+    def speak(self, text: str, origin: int = 0) -> None:
         """Queue text for playback; returns immediately."""
-        self._queue.put(text)
+        self._queue.put((text, origin))
 
     def interrupt(self) -> None:
         """Stop current playback and drop everything still queued."""
@@ -78,8 +84,9 @@ class Speaker:
 
     def _worker(self) -> None:
         while True:
-            text = self._queue.get()
+            text, origin = self._queue.get()
             self._interrupt.clear()
+            self._origin = origin
             self._playing.set()
             path = None
             try:

@@ -79,7 +79,8 @@ class Daemon:
         else:
             phase = "idle"
         return {"phase": phase,
-                "highlight_pid": self.registry.effective_pid()}
+                "highlight_pid": self.registry.effective_pid(),
+                "speaking_pid": self.speaker.speaking_origin}
 
     def select_target(self, pid: int) -> None:
         """Overlay click: choose the target; deliver a held transcript."""

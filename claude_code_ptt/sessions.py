@@ -95,6 +95,7 @@ class SessionRegistry:
     def __init__(self):
         self._lock = threading.Lock()
         self._sessions: dict[int, dict] = {}    # pid -> info
+        self._turns: dict[str, dict] = {}       # transcript key -> turn state
         self.selected_pid = 0                   # 0 = automatic (focus tracking)
         threading.Thread(target=self._reaper, daemon=True).start()
 
@@ -107,7 +108,6 @@ class SessionRegistry:
             self._sessions[pid] = {
                 "pid": pid, "cwd": cwd, "label": label, "hwnd": hwnd,
                 "static": static, "last_seen": time.monotonic(),
-                "busy": False,
             }
         log.info("session registered: %s (pid=%d, hwnd=%d, static=%s)",
                  label, pid, hwnd, static)
@@ -154,18 +154,45 @@ class SessionRegistry:
                     best.append(pid)
         return best
 
-    def set_busy(self, cwd: str, busy: bool) -> None:
-        """Turn state reported by the session's hooks, matched by cwd."""
+    def set_turn_state(self, transcript: str, busy: bool) -> None:
+        """Turn state keyed by transcript path - the only per-session-unique
+        identity the hooks can report (sibling sessions may share a cwd, so
+        a folder-based busy flag would be clobbered by their turn ends)."""
+        key = os.path.normcase(transcript)
         with self._lock:
-            pids = self._best_pids(cwd)
-            for pid in pids:
-                self._sessions[pid]["busy"] = busy
-        if not pids:
-            log.info("turn state for unknown cwd %r (registered: %s)",
-                     cwd, [i["cwd"] for i in self.list()])
+            self._turns[key] = {"busy": busy, "path": transcript,
+                                "ts": time.monotonic()}
+            if len(self._turns) > 32:      # prune long-gone sessions
+                oldest = min(self._turns, key=lambda k: self._turns[k]["ts"])
+                del self._turns[oldest]
+
+    def is_busy_transcript(self, transcript: str) -> bool:
+        if not transcript:
+            return False
+        with self._lock:
+            state = self._turns.get(os.path.normcase(transcript))
+            return bool(state and state["busy"])
+
+    def candidate_transcripts(self, pid: int) -> list[str]:
+        """Transcripts a send could show up in: the session's own hint
+        first, then every other known one (the hint may point to a sibling
+        when several sessions share a cwd)."""
+        candidates: list[str] = []
+        hint = self.transcript_for(pid)
+        if hint:
+            candidates.append(hint)
+        with self._lock:
+            for state in self._turns.values():
+                if state["path"] not in candidates:
+                    candidates.append(state["path"])
+            for info in self._sessions.values():
+                path = str(info.get("transcript") or "")
+                if path and path not in candidates:
+                    candidates.append(path)
+        return candidates
 
     def set_transcript(self, cwd: str, path: str) -> None:
-        """Transcript file of the session, reported by its hooks."""
+        """Transcript file hint per session, reported by its hooks."""
         with self._lock:
             for pid in self._best_pids(cwd):
                 self._sessions[pid]["transcript"] = path
@@ -179,11 +206,6 @@ class SessionRegistry:
         with self._lock:
             pids = self._best_pids(cwd)
             return dict(self._sessions[pids[0]]) if pids else None
-
-    def is_busy(self, pid: int) -> bool:
-        with self._lock:
-            info = self._sessions.get(pid)
-            return bool(info and info.get("busy"))
 
     def select(self, pid: int) -> None:
         """Overlay click: pin this session as the PTT target."""

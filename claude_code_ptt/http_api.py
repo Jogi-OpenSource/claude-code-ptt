@@ -94,21 +94,21 @@ def make_handler(daemon):
                 text = str(body.get("text") or "")
                 cwd = str(body.get("cwd") or "")
                 transcript = str(body.get("transcript") or "")
-                if cwd:
+                if transcript:
                     # a prompt being processed means the session's turn runs
-                    daemon.registry.set_busy(cwd, True)
-                    if transcript:
+                    daemon.registry.set_turn_state(transcript, True)
+                    if cwd:
                         daemon.registry.set_transcript(cwd, transcript)
                 self._send(200, {"ok": daemon.confirm_received(text, cwd)})
             elif self.path == "/turn-state":
                 body = self._body()
                 cwd = str(body.get("cwd") or "")
                 transcript = str(body.get("transcript") or "")
-                if cwd and str(body.get("state")) == "idle":
+                if transcript and str(body.get("state")) == "idle":
                     # the confirm watchdog notices the idle session itself
                     # and starts each queued send's grace window
-                    daemon.registry.set_busy(cwd, False)
-                    if transcript:
+                    daemon.registry.set_turn_state(transcript, False)
+                    if cwd:
                         daemon.registry.set_transcript(cwd, transcript)
                 self._send(200, {"ok": True})
             elif self.path == "/cue":

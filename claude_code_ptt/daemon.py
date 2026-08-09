@@ -198,29 +198,42 @@ class Daemon:
             time.sleep(1.0)
             with self._sends_lock:
                 sends = list(self._sends)
-            transcripts: dict[int, tuple[list[str], list[str]] | None] = {}
-            for send in sends:
-                pid = send["pid"]
-                if pid not in transcripts:
-                    path = self.registry.transcript_for(pid)
+            if not sends:
+                continue
+            cache: dict[str, tuple[list[str], list[str]] | None] = {}
+
+            def tail_of(path: str):
+                if path not in cache:
                     try:
-                        transcripts[pid] = (_transcript_texts(path)
-                                            if path else None)
+                        cache[path] = _transcript_texts(path)
                     except (OSError, ValueError):
-                        transcripts[pid] = None
-                tail = transcripts[pid]
-                if tail is None:
-                    continue
-                queued, processed = tail
+                        cache[path] = None
+                return cache[path]
+
+            for send in sends:
                 head = send["text"][:60]
-                if any(head in text for text in processed[-12:]):
-                    self._confirm_send(
-                        send, "via transcript (processed by session)")
-                elif (not send["queued"]
-                        and any(head in text for text in queued[-12:])):
-                    send["queued"] = True
-                    log.info("arrived in the session queue - waiting to "
-                             "be processed")
+                # once learned, the send sticks to its session's transcript;
+                # until then every known transcript is a candidate (the
+                # per-pid hint may point to a sibling sharing the cwd)
+                candidates = ([send["transcript"]] if send["transcript"]
+                              else self.registry.candidate_transcripts(
+                                  send["pid"]))
+                for path in candidates:
+                    tail = tail_of(path)
+                    if tail is None:
+                        continue
+                    queued, processed = tail
+                    if any(head in text for text in processed[-12:]):
+                        self._confirm_send(
+                            send, "via transcript (processed by session)")
+                        break
+                    if any(head in text for text in queued[-12:]):
+                        send["transcript"] = path
+                        if not send["queued"]:
+                            send["queued"] = True
+                            log.info("arrived in the session queue - "
+                                     "waiting to be processed")
+                        break
 
     def _confirm_watchdog(self) -> None:
         while True:
@@ -230,7 +243,9 @@ class Daemon:
                 sends = list(self._sends)
             for send in sends:
                 age = now - send["started"]
-                busy = self.registry.is_busy(send["pid"])
+                busy = self.registry.is_busy_transcript(
+                    send["transcript"]
+                    or self.registry.transcript_for(send["pid"]))
                 if send["queued"]:
                     # Proven queued: survives while its session works; once
                     # the session idles it must confirm within the grace
@@ -295,6 +310,7 @@ class Daemon:
                     "text": injected, "pid": pid, "started": now,
                     "deadline": now + CONFIRM_TIMEOUT,
                     "queued": False, "idle_since": None,
+                    "transcript": "",      # learned from the enqueue hit
                 })
                 if len(self._sends) > MAX_PENDING_SENDS:
                     dropped = self._sends.pop(0)

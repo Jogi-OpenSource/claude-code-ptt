@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from pathlib import Path
@@ -70,6 +71,28 @@ def _install_hooks() -> bool:
     return True
 
 
+def _adapter_path() -> Path | None:
+    """Locate the MCP adapter executable pip installed for us.
+
+    Not `Path(sys.executable).parent`: that only holds true inside a venv. A
+    normal Windows install keeps python.exe in the root and its scripts in
+    Scripts\\, so that guess registered a path that does not exist and Claude
+    Code reported "Failed to connect" with nothing to go on.
+    """
+    candidates = [sysconfig.get_path("scripts"),
+                  sysconfig.get_path("scripts", scheme="nt_user"),
+                  str(Path(sys.executable).parent)]
+    for directory in candidates:
+        if not directory:
+            continue
+        for name in ("claude-code-ptt-mcp.exe", "claude-code-ptt-mcp"):
+            candidate = Path(directory) / name
+            if candidate.exists():
+                return candidate
+    found = shutil.which("claude-code-ptt-mcp")
+    return Path(found) if found else None
+
+
 def _install_mcp() -> bool:
     claude = shutil.which("claude")
     if not claude:
@@ -77,14 +100,25 @@ def _install_mcp() -> bool:
               "first (https://claude.com/claude-code), then rerun:\n"
               f'  "{sys.executable}" -m claude_code_ptt.installer')
         return False
+    adapter = _adapter_path()
+    if adapter is None:
+        print("ERROR: claude-code-ptt-mcp was not found next to this Python.\n"
+              "  Reinstall the package and rerun:\n"
+              f'  "{sys.executable}" -m pip install --force-reinstall '
+              "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip")
+        return False
     probe = subprocess.run([claude, "mcp", "get", MCP_NAME],
                            capture_output=True, text=True)
     if probe.returncode == 0:
-        print(f"  MCP server `{MCP_NAME}`: already registered")
-        return True
-    adapter = Path(sys.executable).parent / "claude-code-ptt-mcp.exe"
-    if not adapter.exists():
-        adapter = adapter.with_suffix("")
+        if str(adapter) in probe.stdout:
+            print(f"  MCP server `{MCP_NAME}`: already registered")
+            return True
+        # An entry pointing somewhere else is worse than none: Claude Code
+        # reports only "Failed to connect", and rerunning the installer used
+        # to see a registration and leave it alone. Replace it.
+        print(f"  MCP server `{MCP_NAME}`: re-registering (stale path)")
+        subprocess.run([claude, "mcp", "remove", "--scope", "user", MCP_NAME],
+                       capture_output=True, text=True)
     add = subprocess.run(
         [claude, "mcp", "add", "--scope", "user", MCP_NAME, "--",
          str(adapter)],

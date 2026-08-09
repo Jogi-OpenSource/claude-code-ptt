@@ -25,7 +25,9 @@ class Speaker:
 
     `hold_while` (optional callable) gates playback: as long as it returns
     True (e.g. while the mic is recording), queued speech waits instead of
-    talking over the user.
+    talking over the user. If it turns True mid-play, the audible reply is
+    cut off but everything still queued survives and plays afterwards in
+    order — only an explicit interrupt() drops the queue.
     """
 
     def __init__(self, voice: str, hold_while=None):
@@ -84,7 +86,7 @@ class Speaker:
             _mci(f"play {alias}")
             status = ctypes.create_unicode_buffer(32)
             while True:
-                if self._interrupt.is_set():
+                if self._interrupt.is_set() or self._hold_while():
                     break
                 winmm.mciSendStringW(f"status {alias} mode", status, 32, None)
                 if status.value != "playing":

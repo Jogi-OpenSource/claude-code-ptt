@@ -48,8 +48,9 @@ TRANSCRIPT_TAIL = 120
 
 def _transcript_texts(path: str) -> tuple[list[str], list[str]]:
     """Tail of a session transcript, split into texts still waiting in the
-    session's queue (enqueue entries) and texts of processed user messages.
-    A consumed interjection appears as both, enqueue first."""
+    session's queue (enqueue entries) and texts the session has consumed.
+    A prompt injected mid-turn never becomes a `user` entry - it is consumed
+    as a `queued_command` attachment, which counts as processed too."""
     queued: list[str] = []
     processed: list[str] = []
     with open(path, encoding="utf-8") as fh:
@@ -62,6 +63,11 @@ def _transcript_texts(path: str) -> tuple[list[str], list[str]]:
         if (entry.get("type") == "queue-operation"
                 and entry.get("operation") == "enqueue"):
             queued.append(str(entry.get("content") or ""))
+            continue
+        if entry.get("type") == "attachment":
+            attachment = entry.get("attachment") or {}
+            if attachment.get("type") == "queued_command":
+                processed.append(str(attachment.get("prompt") or ""))
             continue
         if entry.get("type") != "user":
             continue
@@ -154,7 +160,8 @@ class Daemon:
             threading.Thread(target=self._finish, args=(audio,),
                              daemon=True).start()
         else:
-            self.speaker.interrupt()       # talking to Claude cuts Claude off
+            # recording cuts off the audible reply via hold_while; queued
+            # replies survive and play afterwards in order
             self._failed = False           # new attempt clears the fail state
             self._pending_text = None
             self.mic_mute.open_for_recording()

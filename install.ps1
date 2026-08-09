@@ -13,10 +13,32 @@ function Sync-Path {
                 (Join-Path $env:USERPROFILE ".local\bin")
 }
 
+function Publish-EnvironmentChange {
+    # Writing the registry is only half the job: explorer.exe keeps its own
+    # copy of the environment and hands that copy to every console it starts,
+    # so without this broadcast the PATH we just wrote stays invisible in new
+    # windows until the next sign-in. .NET's SetEnvironmentVariable sends it
+    # for you - but that one writes REG_SZ and would flatten %VARS%.
+    if (-not ("Ccptt.Native" -as [type])) {
+        Add-Type -Namespace Ccptt -Name Native -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint msg, IntPtr wParam, string lParam,
+    uint flags, uint timeout, out UIntPtr result);
+'@
+    }
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 5s per window: a
+    # hung window must not hold the installer hostage.
+    $answer = [UIntPtr]::Zero
+    [void][Ccptt.Native]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x1A, [IntPtr]::Zero, "Environment", 0x2, 5000, [ref]$answer)
+}
+
 function Add-ToUserPath {
-    # Claude Code drops claude.exe in %USERPROFILE%\.local\bin without putting
-    # that directory on the persistent PATH, so a NEW console cannot find
-    # `claude` - and neither can the MCP adapter we are about to register.
+    # Claude Code drops claude.exe in a directory that is not on the
+    # persistent PATH (%USERPROFILE%\.local\bin for the native install), so a
+    # NEW console cannot find `claude` - and neither can the MCP adapter we
+    # are about to register.
     param([string]$Directory)
 
     if (-not (Test-Path $Directory)) { return }
@@ -25,12 +47,35 @@ function Add-ToUserPath {
     # string, and writing that back turns %VARS% in the user's PATH into
     # literals for good.
     $raw = $key.GetValue("Path", "", "DoNotExpandEnvironmentNames")
-    if (($raw -split ";" | ForEach-Object { $_.TrimEnd("\") }) -contains $Directory.TrimEnd("\")) {
-        return
+    # Compare expanded, because %USERPROFILE%\.local\bin and the spelled-out
+    # path are the same directory and a second copy helps nobody.
+    $entries = $raw -split ";" | ForEach-Object {
+        [Environment]::ExpandEnvironmentVariables($_).TrimEnd("\")
     }
+    if ($entries -contains $Directory.TrimEnd("\")) { return }
     $updated = ($raw.TrimEnd(";") + ";" + $Directory).TrimStart(";")
     Set-ItemProperty -Path "HKCU:\Environment" -Name Path -Value $updated -Type ExpandString
     Write-Host "Added $Directory to your PATH." -ForegroundColor Green
+    try {
+        Publish-EnvironmentChange
+    } catch {
+        Write-Host "Note: running programs were not notified ($_); a sign-out picks it up." -ForegroundColor Yellow
+    }
+}
+
+function Test-ClaudeOnFreshPath {
+    # The only honest answer to "will a NEW window find claude?" comes from a
+    # PATH rebuilt out of the registry - a child process would otherwise just
+    # inherit the PATH Sync-Path fixed up in here.
+    $probe = '$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine")' +
+             ' + ";" + [Environment]::GetEnvironmentVariable("Path", "User");' +
+             ' (Get-Command claude -ErrorAction SilentlyContinue).Source'
+    $shell = (Get-Process -Id $PID).Path
+    if (-not $shell) { $shell = "powershell.exe" }
+    # Base64 rather than -Command: the probe is full of quotes, and native
+    # argument passing mangles those.
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+    return (& $shell -NoProfile -EncodedCommand $encoded | Select-Object -First 1)
 }
 
 function Get-PythonVersion {
@@ -123,11 +168,17 @@ if (-not $version -or $version -lt [version]"3.10") {
 Write-Host "Python $version" -ForegroundColor Green
 # Claude Code is not installed for you: anyone wanting push-to-talk for it
 # already has it. Sync-Path has added its .local\bin, so this only reports.
-if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+$claude = Get-Command claude -ErrorAction SilentlyContinue
+if (-not $claude) {
     Write-Host "ERROR: Claude Code (claude) not found in PATH. Install it first: https://claude.com/claude-code" -ForegroundColor Red
     return
 }
-Add-ToUserPath (Join-Path $env:USERPROFILE ".local\bin")
+# Persist the directory claude REALLY sits in: the native installer uses
+# .local\bin, an npm install puts it in %APPDATA%\npm, and only the one it
+# came from is any use to a new console.
+$claudeDir = Join-Path $env:USERPROFILE ".local\bin"
+if ($claude.Source) { $claudeDir = Split-Path $claude.Source -Parent }
+Add-ToUserPath $claudeDir
 
 # Whisper runs on ctranslate2.dll, which links against the Microsoft Visual
 # C++ runtime. A fresh Windows does not ship it, and its absence surfaces much
@@ -165,3 +216,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & python -m claude_code_ptt.installer
+
+# Last word on the PATH: the whole point is that the NEXT window works, and
+# that is worth measuring instead of assuming.
+try { $fresh = Test-ClaudeOnFreshPath } catch { $fresh = $null }
+if ($fresh) {
+    Write-Host "A new console will find claude at $fresh." -ForegroundColor Green
+} else {
+    Write-Host "WARNING: a new console will NOT find claude yet." -ForegroundColor Red
+    Write-Host "Sign out of Windows and back in, then run 'claude' to check." -ForegroundColor Red
+}

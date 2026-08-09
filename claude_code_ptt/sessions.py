@@ -53,6 +53,23 @@ def process_tree() -> dict[int, tuple[int, str]]:
     return tree
 
 
+MIN_WINDOW_SIZE = 50
+MONITOR_DEFAULTTONULL = 0
+
+
+def _plausible_window(hwnd: int) -> bool:
+    """A real terminal window, not a helper: helper windows can be
+    'visible' at 1x1 (seen live: explorer's ThumbnailDeviceHelperWnd) or
+    parked far off-screen (ConPTY hosting windows at -25600)."""
+    rect = wt.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    if (rect.right - rect.left < MIN_WINDOW_SIZE
+            or rect.bottom - rect.top < MIN_WINDOW_SIZE):
+        return False
+    return bool(user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL))
+
+
 def _window_of_pid(pid: int) -> int:
     found = []
 
@@ -61,7 +78,7 @@ def _window_of_pid(pid: int) -> int:
         if user32.IsWindowVisible(hwnd) and not user32.GetParent(hwnd):
             owner = wt.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-            if owner.value == pid:
+            if owner.value == pid and _plausible_window(hwnd):
                 found.append(hwnd)
                 return False
         return True
@@ -83,12 +100,15 @@ CONSOLE_HOSTS = {"conhost.exe", "openconsole.exe"}
 
 
 def find_session_window(pid: int) -> int:
-    """Walk the parent chain of pid until an ancestor - or a console-host
-    child of an ancestor - owns a visible top-level window. The child check
-    covers classic consoles (cmd.exe): their visible window belongs to a
-    conhost.exe CHILD of the shell, never to an ancestor. Only console
-    hosts qualify, anything else risks grabbing an unrelated helper window
-    (seen live: a 1x1 'ThumbnailDeviceHelperWnd' of an explorer child)."""
+    """The console probe comes FIRST: it asks the session's own console for
+    its window and can never grab an unrelated helper (the tree walk once
+    delivered into a 1x1 explorer helper window). The walk over ancestors -
+    and their console-host children, for classic conhost consoles - stays
+    as the fallback for sessions the probe cannot see (e.g. Electron glass
+    terminals, whose adapters register without an attachable console)."""
+    hwnd = _console_window_probe(pid)
+    if hwnd and _plausible_window(hwnd):
+        return hwnd
     tree = process_tree()
     children: dict[int, list[int]] = {}
     for child, (parent, _name) in tree.items():
@@ -106,7 +126,7 @@ def find_session_window(pid: int) -> int:
         current = tree.get(current, (0, ""))[0]
         if current in (0, 4):
             break
-    return _console_window_probe(pid)
+    return 0
 
 
 def _console_window_probe(pid: int) -> int:

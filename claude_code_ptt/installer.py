@@ -13,6 +13,12 @@ import threading
 import time
 from pathlib import Path
 
+# Set before anything imports huggingface_hub, which reads it once at import.
+# Its xet downloader assembles the file where a size check cannot see it, so
+# the counter sits frozen for half a minute and then jumps. On a 480 MB model
+# xet saved 4 seconds out of 50 - not worth an install that looks dead.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 MCP_NAME = "jogi-ptt"
 HOOK_TIMEOUT = 5
 # event name -> module whose main() the hook runs
@@ -143,9 +149,6 @@ def _fetch_model() -> bool:
         return True
     print(f"\nDownloading the Whisper model `{name}` (several hundred MB).")
     print("This is a one-off; progress is shown below.")
-    # HF_HOME, not HF_HUB_CACHE: the xet downloader stages its chunks in a
-    # sibling directory, so watching only `hub` shows nothing until the very
-    # end, when the finished file appears in one jump.
     from huggingface_hub.constants import HF_HOME
     stop = threading.Event()
     reporter = threading.Thread(target=_report_progress,

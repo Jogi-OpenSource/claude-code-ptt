@@ -87,6 +87,17 @@ def _install_mcp() -> bool:
     return True
 
 
+def _model_cached(name: str) -> bool:
+    try:
+        from huggingface_hub import scan_cache_dir
+        # endswith, not `in`: a cached `large-v3-turbo` must not pass for
+        # `large-v3`, and `small.en` is not `small`.
+        return any(repo.repo_id.endswith(f"faster-whisper-{name}")
+                   for repo in scan_cache_dir().repos)
+    except Exception:                             # no cache dir yet, old hub
+        return False
+
+
 def _fetch_model() -> bool:
     """Pull the Whisper weights now, while a progress bar is on screen.
 
@@ -96,6 +107,9 @@ def _fetch_model() -> bool:
     from .config import Config
 
     name = Config.load().whisper_model
+    if _model_cached(name):
+        print(f"\n  Whisper model `{name}`: already downloaded")
+        return True
     print(f"\nDownloading the Whisper model `{name}` (several hundred MB).")
     print("This is a one-off; progress is shown below.")
     try:
@@ -108,13 +122,39 @@ def _fetch_model() -> bool:
     return True
 
 
+def _check_voice() -> None:
+    """Confirm the configured edge-tts voice exists, before it is needed.
+
+    A typo here otherwise stays invisible until the first spoken reply fails.
+    """
+    import asyncio
+
+    from .config import Config
+
+    wanted = Config.load().tts_voice
+    try:
+        import edge_tts
+        names = {v["ShortName"] for v in asyncio.run(edge_tts.list_voices())}
+    except Exception as exc:                      # offline, service change
+        print(f"  voice `{wanted}`: could not verify ({exc})")
+        return
+    if wanted in names:
+        print(f"  voice `{wanted}`: available")
+    else:
+        print(f"  WARNING: voice `{wanted}` is not offered by edge-tts.")
+        print("  Spoken replies will fail until you set another one in "
+              "%APPDATA%/claude-code-ptt/config.json")
+
+
 def main() -> int:
     print("claude-code-ptt setup")
     ok = _install_mcp()
     ok = _install_hooks() and ok
     if not ok:
         return 1
-    retry = "" if _fetch_model() else (
+    have_model = _fetch_model()
+    _check_voice()
+    retry = "" if have_model else (
         "\nThe Whisper model still has to download on your first "
         "recording - give it a few minutes.")
     print("\nDone. Start a NEW Claude Code session, then press Ctrl+M "

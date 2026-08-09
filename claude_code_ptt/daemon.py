@@ -13,6 +13,7 @@ within CONFIRM_TIMEOUT means delivery failure ("NICHT ANGEKOMMEN").
 import ctypes
 import ctypes.wintypes
 import faulthandler
+import json
 import logging
 import os
 import sys
@@ -41,6 +42,36 @@ CONFIRM_TIMEOUT = 8.0
 FLASH_SECONDS = 2.0
 QUEUE_GRACE = 5.0                          # after turn end: time to confirm
 QUEUE_MAX = 60 * 60.0                      # give up on a queued prompt after
+TRANSCRIPT_TAIL = 120
+
+
+def _transcript_texts(path: str) -> tuple[list[str], list[str]]:
+    """Tail of a session transcript, split into texts still waiting in the
+    session's queue (enqueue entries) and texts of processed user messages.
+    A consumed interjection appears as both, enqueue first."""
+    queued: list[str] = []
+    processed: list[str] = []
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()[-TRANSCRIPT_TAIL:]
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if (entry.get("type") == "queue-operation"
+                and entry.get("operation") == "enqueue"):
+            queued.append(str(entry.get("content") or ""))
+            continue
+        if entry.get("type") != "user":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            processed.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    processed.append(str(part.get("text") or ""))
+    return queued, processed
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -153,10 +184,10 @@ class Daemon:
         return False
 
     def _transcript_watchdog(self) -> None:
-        """Watch the target session's transcript while a send is awaiting:
-        an interjection shows up there the second it is queued, long before
-        the turn ends - that arrival already counts as delivered."""
-        from .turn_hook import _user_texts
+        """Watch the target session's transcript while a send is awaiting.
+        An enqueue entry proves the text reached the session's queue (shown
+        as WARTESCHLANGE); only a processed user message counts as
+        delivered. Processed wins: a consumed interjection leaves both."""
         while True:
             time.sleep(1.0)
             awaited = self._await_text
@@ -166,11 +197,17 @@ class Daemon:
             if not path:
                 continue
             try:
-                texts = _user_texts(path)
+                queued, processed = _transcript_texts(path)
             except (OSError, ValueError):
                 continue
-            if any(awaited[:60] in text for text in texts[-12:]):
-                self._confirmed("via transcript (arrived in session queue)")
+            head = awaited[:60]
+            if any(head in text for text in processed[-12:]):
+                self._confirmed("via transcript (processed by session)")
+            elif (not self._queued
+                    and any(head in text for text in queued[-12:])):
+                self._queued = True
+                log.info("arrived in the session queue - waiting to be "
+                         "processed")
 
     def turn_idle(self) -> None:
         """Target turn ended: a queued prompt must confirm within the grace
@@ -186,15 +223,11 @@ class Daemon:
             now = time.monotonic()
             if now <= self._await_until:
                 continue
-            if (self.registry.is_busy(self._await_pid)
+            if ((self._queued or self.registry.is_busy(self._await_pid))
                     and now - self._await_started < QUEUE_MAX):
-                # Session is mid-turn: the prompt sits safely in its input
-                # queue and only gets processed when the turn ends - not a
-                # delivery failure, just waiting.
-                if not self._queued:
-                    self._queued = True
-                    log.info("target session busy - prompt queued, waiting "
-                             "for its turn to end")
+                # Proven queued (enqueue entry seen) or the session is
+                # mid-turn and the transcript may simply lag - either way
+                # not a delivery failure yet, keep waiting.
                 continue
             self._await_text = None
             self._queued = False

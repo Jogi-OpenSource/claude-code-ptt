@@ -42,6 +42,7 @@ CONFIRM_TIMEOUT = 8.0
 FLASH_SECONDS = 2.0
 QUEUE_GRACE = 5.0                          # after turn end: time to confirm
 QUEUE_MAX = 60 * 60.0                      # give up on a queued prompt after
+MAX_PENDING_SENDS = 8
 TRANSCRIPT_TAIL = 120
 
 
@@ -89,11 +90,11 @@ class Daemon:
         self._transcribing = 0
         self._sending = 0
         self._pending_text = None          # transcript waiting for a target
-        self._await_text = None            # injected text awaiting confirm
-        self._await_until = 0.0
-        self._await_pid = 0                # session the text was sent to
-        self._await_started = 0.0
-        self._queued = False               # target busy, prompt in its queue
+        # Every injected text is tracked as its own pending send until it is
+        # confirmed or fails - rapid follow-up messages must not steal the
+        # tracking slot of an earlier, still unconfirmed one.
+        self._sends: list[dict] = []
+        self._sends_lock = threading.Lock()
         self._failed = False
         self._flash_until = 0.0
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
@@ -107,12 +108,14 @@ class Daemon:
 
     def ui_state(self) -> dict:
         """Snapshot for the overlay: current phase + which row to highlight."""
+        with self._sends_lock:
+            any_sending = any(not s["queued"] for s in self._sends)
+            any_queued = any(s["queued"] for s in self._sends)
         if self.recorder.recording:
             phase = "recording"
-        elif self._sending or (self._await_text is not None
-                               and not self._queued):
+        elif self._sending or any_sending:
             phase = "sending"
-        elif self._queued:
+        elif any_queued:
             phase = "queued"
         elif self._transcribing:
             phase = "transcribing"
@@ -159,82 +162,100 @@ class Daemon:
             play_cue("record_start")
             log.info("recording started")
 
-    def _confirmed(self, source: str) -> None:
-        self._await_text = None
-        self._queued = False
+    def _confirm_send(self, send: dict, source: str) -> None:
+        with self._sends_lock:
+            if send in self._sends:
+                self._sends.remove(send)
         self._failed = False
         self._flash_until = time.monotonic() + FLASH_SECONDS
         log.info("delivery confirmed %s", source)
 
     def confirm_received(self, prompt: str, cwd: str = "") -> bool:
-        """Confirm hook reported a processed prompt; match it to our send."""
+        """Confirm hook reported a processed prompt; match it to our sends."""
         sender = self.registry.session_for_cwd(cwd) if cwd else None
         sender_label = (f"{sender['label']} (pid={sender['pid']})"
                         if sender else "unknown session")
-        awaited = self._await_text
-        if awaited is None:
+        with self._sends_lock:
+            sends = list(self._sends)
+        if not sends:
             log.info("confirm ignored, nothing awaited (from %s, "
                      "prompt head=%r)", sender_label, prompt[:60])
             return False
-        if awaited[:60] in prompt:
-            self._confirmed(f"by {sender_label}")
-            return True
-        log.warning("confirm MISMATCH: awaited=%r vs prompt head=%r",
-                    awaited[:60], prompt[:80])
+        for send in sends:
+            if send["text"][:60] in prompt:
+                self._confirm_send(send, f"by {sender_label}")
+                return True
+        log.warning("confirm MISMATCH: awaited=%s vs prompt head=%r",
+                    [s["text"][:40] for s in sends], prompt[:80])
         return False
 
     def _transcript_watchdog(self) -> None:
-        """Watch the target session's transcript while a send is awaiting.
-        An enqueue entry proves the text reached the session's queue (shown
+        """Watch the target sessions' transcripts while sends are awaiting.
+        An enqueue entry proves a text reached the session's queue (shown
         as WARTESCHLANGE); only a processed user message counts as
         delivered. Processed wins: a consumed interjection leaves both."""
         while True:
             time.sleep(1.0)
-            awaited = self._await_text
-            if awaited is None:
-                continue
-            path = self.registry.transcript_for(self._await_pid)
-            if not path:
-                continue
-            try:
-                queued, processed = _transcript_texts(path)
-            except (OSError, ValueError):
-                continue
-            head = awaited[:60]
-            if any(head in text for text in processed[-12:]):
-                self._confirmed("via transcript (processed by session)")
-            elif (not self._queued
-                    and any(head in text for text in queued[-12:])):
-                self._queued = True
-                log.info("arrived in the session queue - waiting to be "
-                         "processed")
-
-    def turn_idle(self) -> None:
-        """Target turn ended: a queued prompt must confirm within the grace
-        window (the Stop hook flushes the transcript tail right before)."""
-        if self._await_text is not None and self._queued:
-            self._await_until = time.monotonic() + QUEUE_GRACE
+            with self._sends_lock:
+                sends = list(self._sends)
+            transcripts: dict[int, tuple[list[str], list[str]] | None] = {}
+            for send in sends:
+                pid = send["pid"]
+                if pid not in transcripts:
+                    path = self.registry.transcript_for(pid)
+                    try:
+                        transcripts[pid] = (_transcript_texts(path)
+                                            if path else None)
+                    except (OSError, ValueError):
+                        transcripts[pid] = None
+                tail = transcripts[pid]
+                if tail is None:
+                    continue
+                queued, processed = tail
+                head = send["text"][:60]
+                if any(head in text for text in processed[-12:]):
+                    self._confirm_send(
+                        send, "via transcript (processed by session)")
+                elif (not send["queued"]
+                        and any(head in text for text in queued[-12:])):
+                    send["queued"] = True
+                    log.info("arrived in the session queue - waiting to "
+                             "be processed")
 
     def _confirm_watchdog(self) -> None:
         while True:
             time.sleep(0.5)
-            if self._await_text is None:
-                continue
             now = time.monotonic()
-            if now <= self._await_until:
-                continue
-            if ((self._queued or self.registry.is_busy(self._await_pid))
-                    and now - self._await_started < QUEUE_MAX):
-                # Proven queued (enqueue entry seen) or the session is
-                # mid-turn and the transcript may simply lag - either way
-                # not a delivery failure yet, keep waiting.
-                continue
-            self._await_text = None
-            self._queued = False
-            self._failed = True
-            play_cue("error")
-            log.warning("delivery NOT confirmed - text may be stuck "
-                        "in the input line")
+            with self._sends_lock:
+                sends = list(self._sends)
+            for send in sends:
+                age = now - send["started"]
+                busy = self.registry.is_busy(send["pid"])
+                if send["queued"]:
+                    # Proven queued: survives while its session works; once
+                    # the session idles it must confirm within the grace
+                    # window or it really got lost.
+                    if busy:
+                        send["idle_since"] = None
+                        if age < QUEUE_MAX:
+                            continue
+                    else:
+                        if send["idle_since"] is None:
+                            send["idle_since"] = now
+                        if now - send["idle_since"] < QUEUE_GRACE:
+                            continue
+                elif now <= send["deadline"] or (busy and age < QUEUE_MAX):
+                    # Within the normal window, or the session is mid-turn
+                    # and the transcript may simply lag.
+                    continue
+                with self._sends_lock:
+                    if send in self._sends:
+                        self._sends.remove(send)
+                self._failed = True
+                play_cue("error")
+                log.warning("delivery NOT confirmed - text may be stuck "
+                            "in the input line (head=%r)",
+                            send["text"][:40])
 
     def _finish(self, audio) -> None:
         try:
@@ -268,11 +289,17 @@ class Daemon:
         target = self.registry.selected_hwnd
         injected = MIC_PREFIX + text
         if inject_text(target, injected):
-            self._await_text = injected
-            self._await_pid = pid
-            self._await_started = time.monotonic()
-            self._queued = False
-            self._await_until = time.monotonic() + CONFIRM_TIMEOUT
+            now = time.monotonic()
+            with self._sends_lock:
+                self._sends.append({
+                    "text": injected, "pid": pid, "started": now,
+                    "deadline": now + CONFIRM_TIMEOUT,
+                    "queued": False, "idle_since": None,
+                })
+                if len(self._sends) > MAX_PENDING_SENDS:
+                    dropped = self._sends.pop(0)
+                    log.warning("too many pending sends, dropping oldest "
+                                "(head=%r)", dropped["text"][:40])
             log.info("injected %d chars into hwnd %d, awaiting confirmation",
                      len(text), target)
         else:

@@ -105,10 +105,11 @@ def make_handler(daemon):
                 cwd = str(body.get("cwd") or "")
                 transcript = str(body.get("transcript") or "")
                 if cwd and str(body.get("state")) == "idle":
+                    # the confirm watchdog notices the idle session itself
+                    # and starts each queued send's grace window
                     daemon.registry.set_busy(cwd, False)
                     if transcript:
                         daemon.registry.set_transcript(cwd, transcript)
-                    daemon.turn_idle()
                 self._send(200, {"ok": True})
             elif self.path == "/cue":
                 from .cues import play_cue

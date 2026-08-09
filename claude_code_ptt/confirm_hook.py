@@ -23,6 +23,19 @@ def hook_cwd(payload: dict) -> str:
             or str(payload.get("cwd") or ""))
 
 
+def _console_probe() -> str:
+    """TEMP probe: can a hook see the SESSION's console window/title, or
+    only a hidden one of its own? Decides the window-resolution design."""
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    hwnd = kernel32.GetConsoleWindow()
+    title = ctypes.create_unicode_buffer(120)
+    kernel32.GetConsoleTitleW(title, 120)
+    visible = bool(user32.IsWindowVisible(hwnd)) if hwnd else False
+    return f"console hwnd={hwnd} visible={visible} title={title.value!r}"
+
+
 def _note(message: str) -> None:
     try:
         with open(config_dir() / "confirm_hook.log", "a",
@@ -53,6 +66,10 @@ def main() -> None:
         response = urllib.request.urlopen(req, timeout=2).read().decode()
         _note(f"posted {len(prompt)} chars, head={prompt[:40]!r}, "
               f"response={response}")
+        try:
+            _note(f"probe: {_console_probe()}")
+        except Exception as exc:           # noqa: BLE001
+            _note(f"probe FAILED: {exc!r}")
     except Exception as exc:               # noqa: BLE001
         _note(f"FAILED: {exc!r}")          # never break the user's prompt
 

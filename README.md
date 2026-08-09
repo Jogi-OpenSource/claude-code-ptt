@@ -54,6 +54,21 @@ Then start a **new** Claude Code session and press **Ctrl+M**.
   sending, delivered — and if the session is busy working, the prompt is
   shown as queued instead of failed and confirms when the turn ends.
 
+## Configuration
+
+Settings live in `%APPDATA%\claude-code-ptt\config.json`, written on first
+start. Edit it and restart the daemon (close the overlay, press the hotkey
+again) for the changes to take effect.
+
+| Key | Default | What it does |
+|---|---|---|
+| `language` | `""` | Spoken language, as an ISO code such as `de`, `en`, `es`, `fr`. Empty means Whisper guesses per recording — accurate on clear speech, but near-silence can come back as a random language. Set it if you always speak the same one. |
+| `tts_voice` | `en-US-GuyNeural` | Voice for spoken replies. Run `python -m edge_tts --list-voices` to see all of them; pick a name matching your language, e.g. `de-DE-ConradNeural`, `es-ES-AlvaroNeural`. |
+| `whisper_model` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate and slower, and downloads on first use. |
+| `whisper_hotwords` | `""` | Words Whisper should be biased towards — names, commands, jargon it keeps mishearing. |
+| `hotkey_modifiers` / `hotkey_key` | `["ctrl"]` / `M` | The push-to-talk hotkey. Modifiers can be `ctrl`, `alt`, `shift`, `win`. |
+| `daemon_port` | `8377` | Localhost port the MCP adapter talks to. Change it only if something else owns that port. |
+
 ## Features
 
 - Local transcription (faster-whisper, no cloud, any language Whisper knows)

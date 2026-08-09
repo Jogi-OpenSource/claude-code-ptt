@@ -76,13 +76,24 @@ def window_title(hwnd: int) -> str:
 
 
 def find_session_window(pid: int) -> int:
-    """Walk the parent chain of pid until an ancestor owns a visible window."""
+    """Walk the parent chain of pid until an ancestor - or one of an
+    ancestor's direct children - owns a visible top-level window. The child
+    check matters for classic consoles (cmd.exe): their visible window
+    belongs to a conhost.exe CHILD of the shell, never to an ancestor."""
     parents = _parent_map()
+    children: dict[int, list[int]] = {}
+    for child, parent in parents.items():
+        children.setdefault(parent, []).append(child)
     current = pid
     for _ in range(12):
         hwnd = _window_of_pid(current)
         if hwnd:
             return hwnd
+        for child in children.get(current, []):
+            if child != pid:
+                hwnd = _window_of_pid(child)
+                if hwnd:
+                    return hwnd
         current = parents.get(current, 0)
         if current in (0, 4):
             break

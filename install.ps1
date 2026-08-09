@@ -22,6 +22,41 @@ function Get-PythonVersion {
     return [version]$reported
 }
 
+function Write-Status {
+    # One self-overwriting line, padded so a longer previous line leaves no
+    # tail behind the carriage return.
+    param([string]$Text, [switch]$Final)
+    $width = [Math]::Max(40, $Host.UI.RawUI.WindowSize.Width - 1)
+    if ($Text.Length -gt $width) { $Text = $Text.Substring(0, $width) }
+    if ($Final) { Write-Host ("`r" + $Text.PadRight($width)) }
+    else { Write-Host -NoNewline ("`r" + $Text.PadRight($width)) }
+}
+
+function Wait-WithProgress {
+    # A silent installer is indistinguishable from a hung one. Report what is
+    # landing on disk, or what the installer's own log says it is doing.
+    param([System.Diagnostics.Process]$Process, [string]$Label,
+          [string]$WatchDir, [string]$LogFile)
+
+    $start = Get-Date
+    while (-not $Process.HasExited) {
+        $line = "  {0} - {1}s" -f $Label, [int]((Get-Date) - $start).TotalSeconds
+        if ($WatchDir) {
+            # Counted off disk, not via FileSystemWatcher: Windows Installer
+            # writes temp files and renames them, so Created events barely fire.
+            $written = @(Get-ChildItem $WatchDir -Recurse -File -ErrorAction SilentlyContinue)
+            $newest = $written | Sort-Object LastWriteTime | Select-Object -Last 1
+            if ($newest) { $line += " | {0} files | {1}" -f $written.Count, $newest.Name }
+        } elseif ($LogFile -and (Test-Path $LogFile)) {
+            $tail = Get-Content $LogFile -Tail 1 -ErrorAction SilentlyContinue
+            if ($tail) { $line += " | " + $tail.Trim() }
+        }
+        Write-Status $line
+        Start-Sleep -Milliseconds 700
+    }
+    Write-Status ("  {0} - done after {1}s" -f $Label, [int]((Get-Date) - $start).TotalSeconds) -Final
+}
+
 function Get-File {
     param([string]$Url, [string]$Path)
     # curl.exe ships with Windows and draws a readable bar; Invoke-WebRequest
@@ -47,9 +82,11 @@ if (-not $version -or $version -lt [version]"3.10") {
         Write-Host "Installing Python - its own progress window is on screen." -ForegroundColor Yellow
         # tcl/tk stays: the session overlay is tkinter. The test suite and the
         # HTML docs are ~2100 files nothing ever imports.
-        $py = Start-Process $pyExe -Wait -PassThru -ArgumentList "/passive",
+        $py = Start-Process $pyExe -PassThru -ArgumentList "/passive",
             "InstallAllUsers=0", "PrependPath=1", "Include_launcher=0",
             "Include_test=0", "Include_doc=0"
+        Wait-WithProgress -Process $py -Label "Python installer" `
+            -WatchDir (Join-Path $env:LOCALAPPDATA "Programs")
         if ($py.ExitCode -ne 0) { throw "installer exited with $($py.ExitCode)" }
     } catch {
         Write-Host "ERROR: could not install Python ($_)." -ForegroundColor Red
@@ -81,7 +118,11 @@ if (-not (Test-Path (Join-Path $env:SystemRoot "System32\msvcp140.dll"))) {
     $redistExe = Join-Path $env:TEMP "vc_redist.x64.exe"
     try {
         Get-File -Url $redistUrl -Path $redistExe
-        $redist = Start-Process $redistExe -Wait -PassThru -ArgumentList "/install","/passive","/norestart"
+        # The redistributable draws no progress at all; its own log is the only
+        # place that says which package it is on.
+        $redistLog = Join-Path $env:TEMP "vc_redist.install.log"
+        $redist = Start-Process $redistExe -PassThru -ArgumentList "/install","/passive","/norestart","/log",$redistLog
+        Wait-WithProgress -Process $redist -Label "Visual C++ runtime" -LogFile $redistLog
         # 1638 = a newer runtime is already present, 3010 = installed, wants a reboot
         if ($redist.ExitCode -notin 0, 1638, 3010) {
             throw "installer exited with $($redist.ExitCode)"

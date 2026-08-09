@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+MCP_NAME = "jogi-ptt"
 HOOK_TIMEOUT = 5
 # event name -> module whose main() the hook runs
 HOOKS = {"Stop": "turn_hook", "UserPromptSubmit": "confirm_hook"}
@@ -67,21 +68,22 @@ def _install_mcp() -> bool:
               "first (https://claude.com/claude-code), then rerun:\n"
               f'  "{sys.executable}" -m claude_code_ptt.installer')
         return False
-    probe = subprocess.run([claude, "mcp", "get", "ptt"],
+    probe = subprocess.run([claude, "mcp", "get", MCP_NAME],
                            capture_output=True, text=True)
     if probe.returncode == 0:
-        print("  MCP server `ptt`: already registered")
+        print(f"  MCP server `{MCP_NAME}`: already registered")
         return True
     adapter = Path(sys.executable).parent / "claude-code-ptt-mcp.exe"
     if not adapter.exists():
         adapter = adapter.with_suffix("")
     add = subprocess.run(
-        [claude, "mcp", "add", "--scope", "user", "ptt", "--", str(adapter)],
+        [claude, "mcp", "add", "--scope", "user", MCP_NAME, "--",
+         str(adapter)],
         capture_output=True, text=True)
     if add.returncode != 0:
         print(f"ERROR: claude mcp add failed:\n{add.stderr or add.stdout}")
         return False
-    print("  MCP server `ptt`: registered (scope user)")
+    print(f"  MCP server `{MCP_NAME}`: registered (scope user)")
     return True
 
 

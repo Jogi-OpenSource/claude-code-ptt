@@ -13,10 +13,12 @@ can be spoken back to you with a free Microsoft Edge neural voice.
 
 ## Install
 
-One line in PowerShell (needs Python 3.10+ and Claude Code installed):
+One line in PowerShell (needs Python 3.10+ and Claude Code installed) —
+straight from this repo, so what you run is what you see in
+[`install.ps1`](install.ps1):
 
 ```powershell
-irm jogi-bantu.com/ptt | iex
+irm https://raw.githubusercontent.com/Jogi-OpenSource/claude-code-ptt/main/install.ps1 | iex
 ```
 
 Or manually, same result:

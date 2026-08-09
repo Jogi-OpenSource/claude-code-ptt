@@ -1,6 +1,6 @@
 # claude-code-ptt one-line installer for Windows.
 #
-#   irm jogi-bantu.com/ptt | iex
+#   irm https://raw.githubusercontent.com/Jogi-OpenSource/claude-code-ptt/main/install.ps1 | iex
 #
 # Requires: Python 3.10+ and Claude Code already installed.
 $ErrorActionPreference = "Stop"

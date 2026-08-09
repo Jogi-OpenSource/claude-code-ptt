@@ -81,11 +81,6 @@ again) for the changes to take effect.
 ## Requirements
 
 - Windows 10/11
-- [Windows Terminal](https://aka.ms/terminal) as the console host. Injection
-  pastes through the clipboard, which the legacy `conhost.exe` console silently
-  drops — sessions started there never receive the text. Windows 11 uses
-  Windows Terminal by default; on Windows 10 install it and set it as the
-  default terminal application.
 - Python 3.10+
 - Claude Code
 

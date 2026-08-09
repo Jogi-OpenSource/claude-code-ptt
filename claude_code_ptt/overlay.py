@@ -31,6 +31,7 @@ TITLES = {
     "recording": ("● REC", RED),
     "transcribing": ("● TRANSKRIPTION", ORANGE),
     "sending": ("● SENDE", ORANGE),
+    "queued": ("● WARTESCHLANGE", ORANGE),
     "flash": ("● ANGEKOMMEN", ORANGE),
     "choose_target": ("● ZIEL WÄHLEN", RED),
     "failed": ("● NICHT ANGEKOMMEN", RED),
@@ -149,6 +150,11 @@ class Overlay:
                     # fast orange blink while the text is being delivered
                     on = int(time.monotonic() / 0.15) % 2 == 0
                     bg = ORANGE if on else ROW_BG
+                    fg, dot_fg, border = "white", "white", bg
+                elif is_target and state["phase"] == "queued":
+                    # session busy: dim slow orange breathing while the
+                    # prompt waits in the session's input queue
+                    bg = _mix(ROW_BG, ORANGE, pulse * 0.45)
                     fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "flash":
                     bg, fg, dot_fg, border = ORANGE, "white", "white", ORANGE

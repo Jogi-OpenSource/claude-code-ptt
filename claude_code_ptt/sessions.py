@@ -95,6 +95,7 @@ class SessionRegistry:
             self._sessions[pid] = {
                 "pid": pid, "cwd": cwd, "label": label, "hwnd": hwnd,
                 "static": static, "last_seen": time.monotonic(),
+                "busy": False,
             }
         log.info("session registered: %s (pid=%d, hwnd=%d, static=%s)",
                  label, pid, hwnd, static)
@@ -111,6 +112,18 @@ class SessionRegistry:
     def list(self) -> list[dict]:
         with self._lock:
             return [dict(info) for info in self._sessions.values()]
+
+    def set_busy(self, cwd: str, busy: bool) -> None:
+        """Turn state reported by the session's hooks, matched by cwd."""
+        with self._lock:
+            for info in self._sessions.values():
+                if info["cwd"] == cwd:
+                    info["busy"] = busy
+
+    def is_busy(self, pid: int) -> bool:
+        with self._lock:
+            info = self._sessions.get(pid)
+            return bool(info and info.get("busy"))
 
     def select(self, pid: int) -> None:
         """Overlay click: pin this session as the PTT target."""

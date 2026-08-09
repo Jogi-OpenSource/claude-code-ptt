@@ -39,6 +39,8 @@ HOTKEY_ID = 1
 MIC_PREFIX = "[mic] "                      # ASCII: renders in every terminal
 CONFIRM_TIMEOUT = 8.0
 FLASH_SECONDS = 2.0
+QUEUE_GRACE = 5.0                          # after turn end: time to confirm
+QUEUE_MAX = 60 * 60.0                      # give up on a queued prompt after
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -57,6 +59,9 @@ class Daemon:
         self._pending_text = None          # transcript waiting for a target
         self._await_text = None            # injected text awaiting confirm
         self._await_until = 0.0
+        self._await_pid = 0                # session the text was sent to
+        self._await_started = 0.0
+        self._queued = False               # target busy, prompt in its queue
         self._failed = False
         self._flash_until = 0.0
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
@@ -70,8 +75,11 @@ class Daemon:
         """Snapshot for the overlay: current phase + which row to highlight."""
         if self.recorder.recording:
             phase = "recording"
-        elif self._sending or self._await_text is not None:
+        elif self._sending or (self._await_text is not None
+                               and not self._queued):
             phase = "sending"
+        elif self._queued:
+            phase = "queued"
         elif self._transcribing:
             phase = "transcribing"
         elif self._pending_text is not None:
@@ -126,6 +134,7 @@ class Daemon:
             return False
         if awaited[:60] in prompt:
             self._await_text = None
+            self._queued = False
             self._failed = False
             self._flash_until = time.monotonic() + FLASH_SECONDS
             log.info("delivery confirmed by session")
@@ -134,16 +143,36 @@ class Daemon:
                     awaited[:60], prompt[:80])
         return False
 
+    def turn_idle(self) -> None:
+        """Target turn ended: a queued prompt must confirm within the grace
+        window (the Stop hook flushes the transcript tail right before)."""
+        if self._await_text is not None and self._queued:
+            self._await_until = time.monotonic() + QUEUE_GRACE
+
     def _confirm_watchdog(self) -> None:
         while True:
             time.sleep(0.5)
-            if (self._await_text is not None
-                    and time.monotonic() > self._await_until):
-                self._await_text = None
-                self._failed = True
-                play_cue("error")
-                log.warning("delivery NOT confirmed - text may be stuck "
-                            "in the input line")
+            if self._await_text is None:
+                continue
+            now = time.monotonic()
+            if now <= self._await_until:
+                continue
+            if (self.registry.is_busy(self._await_pid)
+                    and now - self._await_started < QUEUE_MAX):
+                # Session is mid-turn: the prompt sits safely in its input
+                # queue and only gets processed when the turn ends - not a
+                # delivery failure, just waiting.
+                if not self._queued:
+                    self._queued = True
+                    log.info("target session busy - prompt queued, waiting "
+                             "for its turn to end")
+                continue
+            self._await_text = None
+            self._queued = False
+            self._failed = True
+            play_cue("error")
+            log.warning("delivery NOT confirmed - text may be stuck "
+                        "in the input line")
 
     def _finish(self, audio) -> None:
         try:
@@ -173,10 +202,14 @@ class Daemon:
             self._sending -= 1
 
     def _deliver(self, text: str) -> None:
+        pid = self.registry.effective_pid()
         target = self.registry.selected_hwnd
         injected = MIC_PREFIX + text
         if inject_text(target, injected):
             self._await_text = injected
+            self._await_pid = pid
+            self._await_started = time.monotonic()
+            self._queued = False
             self._await_until = time.monotonic() + CONFIRM_TIMEOUT
             log.info("injected %d chars into hwnd %d, awaiting confirmation",
                      len(text), target)

@@ -8,7 +8,9 @@ Endpoints (JSON):
   POST /register        -> body {"pid", "cwd", "static"?}; session announces itself
   POST /heartbeat       -> body {"pid": ...}; keeps a registration alive
   POST /unregister      -> body {"pid": ...}; session says goodbye
-  POST /prompt-received -> body {"text": ...}; confirm hook reports a prompt
+  POST /prompt-received -> body {"text", "cwd"?}; confirm hook reports a prompt
+  POST /turn-state      -> body {"cwd", "state": "idle"}; Stop hook reports
+                           the end of a session's turn
 """
 import json
 import logging
@@ -88,8 +90,20 @@ def make_handler(daemon):
                 # a 4xx would surface as an exception there instead
                 self._send(200, {"ok": daemon.registry.heartbeat(pid)})
             elif self.path == "/prompt-received":
-                text = str(self._body().get("text") or "")
+                body = self._body()
+                text = str(body.get("text") or "")
+                cwd = str(body.get("cwd") or "")
+                if cwd:
+                    # a prompt being processed means the session's turn runs
+                    daemon.registry.set_busy(cwd, True)
                 self._send(200, {"ok": daemon.confirm_received(text)})
+            elif self.path == "/turn-state":
+                body = self._body()
+                cwd = str(body.get("cwd") or "")
+                if cwd and str(body.get("state")) == "idle":
+                    daemon.registry.set_busy(cwd, False)
+                    daemon.turn_idle()
+                self._send(200, {"ok": True})
             elif self.path == "/cue":
                 from .cues import play_cue
                 play_cue(str(self._body().get("type") or ""))

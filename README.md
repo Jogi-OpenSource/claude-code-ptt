@@ -29,12 +29,13 @@ claude-code-ptt install
 ```
 
 `claude-code-ptt install` registers the MCP server (`claude mcp add --scope
-user`) and adds the two delivery-confirmation hooks to
-`~/.claude/settings.json` (a backup is written next to it). It is
-idempotent — rerun it any time, e.g. after moving Python.
+user`), adds the two delivery-confirmation hooks to
+`~/.claude/settings.json` (a backup is written next to it), and downloads
+the Whisper model (~0.5 GB, with a progress bar) so your first recording
+does not have to wait for it. It is idempotent — rerun it any time, e.g.
+after moving Python.
 
-Then start a **new** Claude Code session and press **Ctrl+M**. The first
-recording downloads the Whisper model (~0.5 GB), so give it a few minutes.
+Then start a **new** Claude Code session and press **Ctrl+M**.
 
 ## How it works
 

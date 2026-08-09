@@ -87,15 +87,38 @@ def _install_mcp() -> bool:
     return True
 
 
+def _fetch_model() -> bool:
+    """Pull the Whisper weights now, while a progress bar is on screen.
+
+    Left to itself the model downloads on the very first recording, where the
+    user sees nothing happen for several minutes and assumes it is broken.
+    """
+    from .config import Config
+
+    name = Config.load().whisper_model
+    print(f"\nDownloading the Whisper model `{name}` (several hundred MB).")
+    print("This is a one-off; progress is shown below.")
+    try:
+        from faster_whisper import WhisperModel
+        WhisperModel(name, device="cpu", compute_type="int8")
+    except Exception as exc:                      # network, disk, bad model id
+        print(f"  WARNING: download failed ({exc}).")
+        return False
+    print(f"  model `{name}`: ready")
+    return True
+
+
 def main() -> int:
     print("claude-code-ptt setup")
     ok = _install_mcp()
     ok = _install_hooks() and ok
     if not ok:
         return 1
+    retry = "" if _fetch_model() else (
+        "\nThe Whisper model still has to download on your first "
+        "recording - give it a few minutes.")
     print("\nDone. Start a NEW Claude Code session, then press Ctrl+M "
-          "(default) and speak.\nThe first recording downloads the Whisper "
-          "model (~0.5 GB) - give it a few minutes.")
+          "(default) and speak." + retry)
     return 0
 
 

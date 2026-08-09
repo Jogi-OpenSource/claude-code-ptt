@@ -19,6 +19,12 @@ from pathlib import Path
 # the counter sits frozen for half a minute and then jumps. On a 480 MB model
 # xet saved 4 seconds out of 50 - not worth an install that looks dead.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+# Same file, second symptom: the Hub answers a download with notices of its
+# own ("You are sending unauthenticated requests to the HF Hub"), which the
+# library logs mid-line - right through the self-overwriting \r progress line
+# below, which then reads as garbage. Only the logger is quietened: what
+# actually fails still raises, and _fetch_model() reports it.
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 MCP_NAME = "jogi-ptt"
 HOOK_TIMEOUT = 5

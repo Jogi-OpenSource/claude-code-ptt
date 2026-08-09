@@ -35,7 +35,18 @@ class Speaker:
         self._interrupt = threading.Event()
         self._playing = threading.Event()
         self._origin = 0                   # session pid currently speaking
+        self._purge_leftovers()
         threading.Thread(target=self._worker, daemon=True).start()
+
+    @staticmethod
+    def _purge_leftovers() -> None:
+        """Synthesized files are deleted after playback, but a daemon killed
+        mid-play leaves them behind - clean those up on the next start."""
+        for path in Path(tempfile.gettempdir()).glob("ccptt-*.mp3"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     @property
     def playing(self) -> bool:

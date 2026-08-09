@@ -35,6 +35,12 @@ def _user_texts(transcript_path: str) -> list[str]:
             entry = json.loads(line)
         except ValueError:
             continue
+        if (entry.get("type") == "queue-operation"
+                and entry.get("operation") == "enqueue"):
+            # interjection queued mid-turn: stored as its own entry type,
+            # not as a user message
+            texts.append(str(entry.get("content") or ""))
+            continue
         if entry.get("type") != "user":
             continue
         content = (entry.get("message") or {}).get("content")

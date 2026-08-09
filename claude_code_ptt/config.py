@@ -24,9 +24,6 @@ class Config:
     language: str = ""
     # edge-tts voice for spoken replies.
     tts_voice: str = "en-US-GuyNeural"
-    # Substrings that identify a Claude Code terminal window title.
-    window_title_markers: list[str] = field(
-        default_factory=lambda: ["claude"])
     # Daemon HTTP port for the MCP adapter (localhost only).
     daemon_port: int = 8377
 

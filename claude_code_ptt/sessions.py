@@ -120,13 +120,19 @@ class SessionRegistry:
         different casing or slashes than the adapter registered."""
         return os.path.normpath(cwd).casefold()
 
+    @classmethod
+    def _cwd_matches(cls, registered: str, reported: str) -> bool:
+        """A session's shell may cd into subfolders; a reported cwd inside
+        the registered project dir still belongs to that session."""
+        reg, rep = cls._norm_cwd(registered), cls._norm_cwd(reported)
+        return rep == reg or rep.startswith(reg + os.sep)
+
     def set_busy(self, cwd: str, busy: bool) -> None:
         """Turn state reported by the session's hooks, matched by cwd."""
-        wanted = self._norm_cwd(cwd)
         with self._lock:
             matched = False
             for info in self._sessions.values():
-                if self._norm_cwd(info["cwd"]) == wanted:
+                if self._cwd_matches(info["cwd"], cwd):
                     info["busy"] = busy
                     matched = True
         if not matched:
@@ -134,10 +140,9 @@ class SessionRegistry:
                      cwd, [i["cwd"] for i in self.list()])
 
     def session_for_cwd(self, cwd: str) -> dict | None:
-        wanted = self._norm_cwd(cwd)
         with self._lock:
             for info in self._sessions.values():
-                if self._norm_cwd(info["cwd"]) == wanted:
+                if self._cwd_matches(info["cwd"], cwd):
                     return dict(info)
         return None
 

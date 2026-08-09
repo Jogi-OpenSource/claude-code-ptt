@@ -12,7 +12,7 @@ import sys
 import urllib.request
 
 from .config import Config
-from .confirm_hook import _note
+from .confirm_hook import _note, hook_cwd
 
 TAIL_LINES = 120
 MAX_REPORTS = 8
@@ -51,7 +51,7 @@ def main() -> None:
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         port = Config.load().daemon_port
-        cwd = str(payload.get("cwd") or "")
+        cwd = hook_cwd(payload)
         transcript_path = str(payload.get("transcript_path") or "")
         if transcript_path:
             try:

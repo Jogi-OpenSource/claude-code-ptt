@@ -7,11 +7,20 @@ never reaches this point. Must never block or fail the user's prompt; every
 run leaves a trace in confirm_hook.log so silent failures stay diagnosable.
 """
 import json
+import os
 import sys
 import time
 import urllib.request
 
 from .config import Config, config_dir
+
+
+def hook_cwd(payload: dict) -> str:
+    """Session identity for the daemon: the payload cwd follows the shell
+    (cd drifts into subfolders), the project dir env var stays what the
+    MCP adapter registered with."""
+    return (os.environ.get("CLAUDE_PROJECT_DIR")
+            or str(payload.get("cwd") or ""))
 
 
 def _note(message: str) -> None:
@@ -34,8 +43,7 @@ def main() -> None:
             _note("empty prompt, nothing to report")
             return
         port = Config.load().daemon_port
-        body = json.dumps({"text": prompt,
-                           "cwd": str(payload.get("cwd") or "")},
+        body = json.dumps({"text": prompt, "cwd": hook_cwd(payload)},
                           ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/prompt-received", data=body,

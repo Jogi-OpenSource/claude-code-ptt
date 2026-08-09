@@ -96,7 +96,7 @@ def make_handler(daemon):
                 if cwd:
                     # a prompt being processed means the session's turn runs
                     daemon.registry.set_busy(cwd, True)
-                self._send(200, {"ok": daemon.confirm_received(text)})
+                self._send(200, {"ok": daemon.confirm_received(text, cwd)})
             elif self.path == "/turn-state":
                 body = self._body()
                 cwd = str(body.get("cwd") or "")

@@ -8,6 +8,7 @@ until an ancestor owns a visible top-level window.
 import ctypes
 import ctypes.wintypes as wt
 import logging
+import os
 import threading
 import time
 from pathlib import PureWindowsPath
@@ -113,12 +114,32 @@ class SessionRegistry:
         with self._lock:
             return [dict(info) for info in self._sessions.values()]
 
+    @staticmethod
+    def _norm_cwd(cwd: str) -> str:
+        """Windows paths are case-insensitive and hooks may report them with
+        different casing or slashes than the adapter registered."""
+        return os.path.normpath(cwd).casefold()
+
     def set_busy(self, cwd: str, busy: bool) -> None:
         """Turn state reported by the session's hooks, matched by cwd."""
+        wanted = self._norm_cwd(cwd)
+        with self._lock:
+            matched = False
+            for info in self._sessions.values():
+                if self._norm_cwd(info["cwd"]) == wanted:
+                    info["busy"] = busy
+                    matched = True
+        if not matched:
+            log.info("turn state for unknown cwd %r (registered: %s)",
+                     cwd, [i["cwd"] for i in self.list()])
+
+    def session_for_cwd(self, cwd: str) -> dict | None:
+        wanted = self._norm_cwd(cwd)
         with self._lock:
             for info in self._sessions.values():
-                if info["cwd"] == cwd:
-                    info["busy"] = busy
+                if self._norm_cwd(info["cwd"]) == wanted:
+                    return dict(info)
+        return None
 
     def is_busy(self, pid: int) -> bool:
         with self._lock:

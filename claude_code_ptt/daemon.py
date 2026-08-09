@@ -125,19 +125,22 @@ class Daemon:
             play_cue("record_start")
             log.info("recording started")
 
-    def confirm_received(self, prompt: str) -> bool:
+    def confirm_received(self, prompt: str, cwd: str = "") -> bool:
         """Confirm hook reported a processed prompt; match it to our send."""
+        sender = self.registry.session_for_cwd(cwd) if cwd else None
+        sender_label = (f"{sender['label']} (pid={sender['pid']})"
+                        if sender else "unknown session")
         awaited = self._await_text
         if awaited is None:
-            log.info("confirm ignored, nothing awaited (prompt head=%r)",
-                     prompt[:60])
+            log.info("confirm ignored, nothing awaited (from %s, "
+                     "prompt head=%r)", sender_label, prompt[:60])
             return False
         if awaited[:60] in prompt:
             self._await_text = None
             self._queued = False
             self._failed = False
             self._flash_until = time.monotonic() + FLASH_SECONDS
-            log.info("delivery confirmed by session")
+            log.info("delivery confirmed by %s", sender_label)
             return True
         log.warning("confirm MISMATCH: awaited=%r vs prompt head=%r",
                     awaited[:60], prompt[:80])

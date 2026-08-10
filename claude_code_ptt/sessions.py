@@ -153,10 +153,16 @@ def _console_window_probe(pid: int) -> int:
 class SessionRegistry:
     """Registered sessions plus the user's explicit target selection."""
 
-    def __init__(self):
+    def __init__(self, voices):
+        """Voices are not handed out here - voices.VoicePool does that
+        when a session speaks. The registry only tells the pool which
+        processes still exist: a voice may be reused once the process
+        holding it is gone, and the reaper is the daemon's standing sweep
+        for exactly that question."""
         self._lock = threading.Lock()
         self._sessions: dict[int, dict] = {}    # pid -> info
         self._turns: dict[str, dict] = {}       # transcript key -> turn state
+        self._voices = voices
         self.selected_pid = 0                   # 0 = automatic (focus tracking)
         threading.Thread(target=self._reaper, daemon=True).start()
 
@@ -283,7 +289,10 @@ class SessionRegistry:
         return 0
 
     def unregister(self, pid: int) -> None:
-        """Session closes: drop it; a pinned target falls back to auto."""
+        """Session says goodbye: drop it; a pinned target falls back to
+        auto. The voice stays reserved - a goodbye comes from the adapter,
+        and a restarted adapter says it for a session that keeps running.
+        Only the reaper hands voices of gone processes back."""
         with self._lock:
             info = self._sessions.pop(pid, None)
         if info:
@@ -305,18 +314,26 @@ class SessionRegistry:
     def _reaper(self) -> None:
         while True:
             time.sleep(5)
-            cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
-            with self._lock:
-                dead = []
-                for pid, info in self._sessions.items():
-                    if info.get("static"):
-                        if not user32.IsWindow(info["hwnd"]):
-                            dead.append(pid)
-                    elif info["last_seen"] < cutoff:
+            self._reap()
+
+    def _reap(self) -> None:
+        """Drop sessions whose heartbeats stopped (static ones: whose
+        window is gone), then free the voices of the processes that are
+        really gone. A missed heartbeat is not a goodbye - the adapter
+        re-registers moments later and has to keep sounding the same."""
+        cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
+        with self._lock:
+            dead = []
+            for pid, info in self._sessions.items():
+                if info.get("static"):
+                    if not user32.IsWindow(info["hwnd"]):
                         dead.append(pid)
-                for pid in dead:
-                    log.info("session expired: %s (pid=%d)",
-                             self._sessions[pid]["label"], pid)
-                    del self._sessions[pid]
-                if self.selected_pid in dead:
-                    self.selected_pid = 0
+                elif info["last_seen"] < cutoff:
+                    dead.append(pid)
+            for pid in dead:
+                log.info("session expired: %s (pid=%d)",
+                         self._sessions[pid]["label"], pid)
+                del self._sessions[pid]
+            if self.selected_pid in dead:
+                self.selected_pid = 0
+        self._voices.retain(set(process_tree()))

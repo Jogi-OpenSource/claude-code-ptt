@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from . import http_api
+from . import http_api, session_port
 from .config import Config, config_dir
 from .cues import play_cue
 from .injector import inject_text
@@ -30,6 +30,7 @@ from .recorder import Recorder
 from .sessions import SessionRegistry
 from .speaker import Speaker
 from .transcriber import Transcriber
+from .voices import VoicePool
 
 user32 = ctypes.windll.user32
 
@@ -90,9 +91,15 @@ class Daemon:
         self.mic_mute = MicMute()
         self.transcriber = Transcriber(config.whisper_model, config.language,
                                        config.whisper_hotwords)
-        self.speaker = Speaker(config.tts_voice,
-                               hold_while=lambda: self.recorder.recording)
-        self.registry = SessionRegistry()
+        self.speaker = Speaker(
+            rate=config.tts_rate,
+            pitch=config.tts_pitch,
+            volume=config.tts_volume,
+            hold_while=lambda: self.recorder.recording,
+        )
+        self.voices = VoicePool(config.tts_voice)
+        self.voices.prefetch()             # long before the first session
+        self.registry = SessionRegistry(self.voices)
         self._transcribing = 0
         self._sending = 0
         self._pending_text = None          # transcript waiting for a target
@@ -146,6 +153,16 @@ class Daemon:
                              daemon=True).start()
         elif pending is not None:
             self._pending_text = pending   # clicked row has no window
+
+    def speak(self, text: str, pid: int = 0) -> None:
+        """Queue a spoken reply in the voice of the session it came from.
+
+        The voice comes from the pool, not from the registration: a
+        session whose registration just expired keeps sounding the same
+        until it has beaten again. Text from no session at all (pid 0)
+        uses the configured voice."""
+        voice = self.voices.voice_for(pid) if pid else self.voices.default
+        self.speaker.speak(text, voice, pid)
 
     def toggle(self) -> None:
         if self.recorder.recording:
@@ -341,7 +358,9 @@ class Daemon:
                       "change it in %s", "+".join(self.config.hotkey_modifiers),
                       self.config.hotkey_key, config_dir() / "config.json")
             sys.exit(1)
-        http_api.start(self, self.config.daemon_port)
+        # the adapter may have had to step aside from the configured port
+        # (another logged-on account's daemon already owns it)
+        http_api.start(self, session_port.resolve(self.config.daemon_port))
         log.info("ready - hotkey %s+%s toggles recording",
                  "+".join(self.config.hotkey_modifiers),
                  self.config.hotkey_key)

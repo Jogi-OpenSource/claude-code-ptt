@@ -24,8 +24,11 @@ class Config:
     language: str = ""
     # Phrases Whisper should be biased towards (e.g. command words).
     whisper_hotwords: str = ""
-    # edge-tts voice for spoken replies.
+    # edge-tts voice and neutral voice controls for spoken replies.
     tts_voice: str = "en-US-GuyNeural"
+    tts_rate: str = "+0%"
+    tts_pitch: str = "+0Hz"
+    tts_volume: str = "+0%"
     # Daemon HTTP port for the MCP adapter (localhost only).
     daemon_port: int = 8377
 

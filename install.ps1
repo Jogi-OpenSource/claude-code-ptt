@@ -107,12 +107,45 @@ function Write-Status {
 
 function Wait-WithProgress {
     # A silent installer is indistinguishable from a hung one. Report what is
-    # landing on disk, or what the installer's own log says it is doing.
+    # landing on disk, what the installer's log says, or its latest output line.
     param([System.Diagnostics.Process]$Process, [string]$Label,
-          [string]$WatchDir, [string]$LogFile)
+          [string]$WatchDir, [string]$LogFile, [switch]$ReadOutput)
 
     $start = Get-Date
-    while (-not $Process.HasExited) {
+    $captured = [Collections.Generic.List[string]]::new()
+    $latest = $null
+    $stdoutOpen = $ReadOutput.IsPresent
+    $stderrOpen = $ReadOutput.IsPresent
+    if ($ReadOutput) {
+        $stdoutTask = $Process.StandardOutput.ReadLineAsync()
+        $stderrTask = $Process.StandardError.ReadLineAsync()
+    }
+
+    while (-not $Process.HasExited -or $stdoutOpen -or $stderrOpen) {
+        while (($stdoutOpen -and $stdoutTask.IsCompleted) -or
+               ($stderrOpen -and $stderrTask.IsCompleted)) {
+            if ($stdoutOpen -and $stdoutTask.IsCompleted) {
+                $next = $stdoutTask.Result
+                if ($null -eq $next) {
+                    $stdoutOpen = $false
+                } else {
+                    $latest = $next.Trim()
+                    if ($latest) { $captured.Add($latest) }
+                    $stdoutTask = $Process.StandardOutput.ReadLineAsync()
+                }
+            }
+            if ($stderrOpen -and $stderrTask.IsCompleted) {
+                $next = $stderrTask.Result
+                if ($null -eq $next) {
+                    $stderrOpen = $false
+                } else {
+                    $latest = $next.Trim()
+                    if ($latest) { $captured.Add($latest) }
+                    $stderrTask = $Process.StandardError.ReadLineAsync()
+                }
+            }
+        }
+
         $line = "  {0} - {1}s" -f $Label, [int]((Get-Date) - $start).TotalSeconds
         if ($WatchDir) {
             # Counted off disk, not via FileSystemWatcher: Windows Installer
@@ -123,11 +156,40 @@ function Wait-WithProgress {
         } elseif ($LogFile -and (Test-Path $LogFile)) {
             $tail = Get-Content $LogFile -Tail 1 -ErrorAction SilentlyContinue
             if ($tail) { $line += " | " + $tail.Trim() }
+        } elseif ($latest) {
+            $line += " | " + $latest
         }
         Write-Status $line
         Start-Sleep -Milliseconds 700
     }
     Write-Status ("  {0} - done after {1}s" -f $Label, [int]((Get-Date) - $start).TotalSeconds) -Final
+    return $captured
+}
+
+function Invoke-PipInstall {
+    param([string]$Python, [string]$Package)
+
+    if ($Package.Contains('"')) { throw "package address contains an unsupported quote" }
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Python
+    $startInfo.Arguments = '-m pip install --upgrade --progress-bar off "{0}"' -f $Package
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $output = @(Wait-WithProgress -Process $process -Label "pip install" -ReadOutput)
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+
+    if ($exitCode -ne 0) {
+        Write-Host "pip output:" -ForegroundColor Red
+        $output | ForEach-Object { Write-Host "  $_" }
+    }
+    return $exitCode
 }
 
 function Get-File {
@@ -217,8 +279,9 @@ if (-not (Test-Path (Join-Path $env:SystemRoot "System32\msvcp140.dll"))) {
 
 Write-Host "Installing package. This downloads Whisper and its audio dependencies," -ForegroundColor Yellow
 Write-Host "several hundred MB, so expect a few minutes. Do not close this window." -ForegroundColor Yellow
-& python -m pip install --upgrade "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip"
-if ($LASTEXITCODE -ne 0) {
+$pipExitCode = Invoke-PipInstall -Python "python" `
+    -Package "https://github.com/Jogi-OpenSource/claude-code-ptt/archive/main.zip"
+if ($pipExitCode -ne 0) {
     Write-Host "ERROR: pip install failed (see output above)." -ForegroundColor Red
     return
 }

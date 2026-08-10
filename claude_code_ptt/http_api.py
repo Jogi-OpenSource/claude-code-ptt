@@ -1,7 +1,7 @@
 """Localhost HTTP API of the daemon, used by the MCP adapter and /ptt-here.
 
 Endpoints (JSON):
-  GET  /status          -> {recording, speaking, target, version}
+  GET  /status          -> {recording, speaking, target, version, session}
   GET  /sessions        -> registered sessions
   POST /speak           -> body {"text": ...}; queues TTS playback
   POST /interrupt       -> stops TTS playback
@@ -18,6 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
+from .session_port import session_id
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -53,6 +54,10 @@ def make_handler(daemon):
                     "speaking": daemon.speaker.playing,
                     "target": daemon.target_hwnd(),
                     "version": __version__,
+                    # loopback is shared by every logged-on account: this
+                    # tells an adapter whether the daemon it found is on
+                    # its own desktop or on somebody else's
+                    "session": session_id(),
                 })
             elif self.path == "/sessions":
                 self._send(200, daemon.registry.list())
@@ -66,7 +71,7 @@ def make_handler(daemon):
                 if not text:
                     self._send(400, {"error": "missing 'text'"})
                     return
-                daemon.speaker.speak(text, int(body.get("pid") or 0))
+                daemon.speak(text, int(body.get("pid") or 0))
                 self._send(200, {"ok": True})
             elif self.path == "/interrupt":
                 daemon.speaker.interrupt()

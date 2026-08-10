@@ -16,6 +16,7 @@ import urllib.request
 
 from mcp.server.fastmcp import FastMCP
 
+from . import session_port
 from .config import Config
 
 mcp = FastMCP(
@@ -29,7 +30,8 @@ mcp = FastMCP(
 )
 
 _config = Config.load()
-_BASE = f"http://127.0.0.1:{_config.daemon_port}"
+_port = session_port.resolve(_config.daemon_port)
+_windows_session = session_port.session_id()
 _session_pid_cache = 0
 
 
@@ -44,19 +46,38 @@ def _request(path: str, payload: dict | None = None) -> dict:
     import json
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
-        _BASE + path, data=data,
+        f"http://127.0.0.1:{_port}{path}", data=data,
         headers={"Content-Type": "application/json"} if data else {},
         method="POST" if data is not None or path != "/status" else "GET")
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
 
-def _ensure_daemon() -> None:
+def _daemon_is_ours() -> bool:
+    """Does a daemon of OUR Windows session answer on our port?
+
+    A daemon started by another logged-on account answers on the same
+    loopback port, but its overlay lives on a desktop we cannot see -
+    talking to it would leave this session mute. A daemon too old to name
+    its session counts as ours: on a machine with one account it is."""
     try:
-        _request("/status")
+        status = _request("/status")
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    if "version" not in status:            # somebody else's HTTP server
+        return False
+    return status.get("session", _windows_session) == _windows_session
+
+
+def _ensure_daemon() -> None:
+    global _port
+    if _daemon_is_ours():
         return
-    except (urllib.error.URLError, OSError):
-        pass
+    if session_port.in_use(_port):
+        # a stranger owns this port - step aside and note the new one, so
+        # this session's hooks report their deliveries to the same daemon
+        _port = session_port.free_port(_config.daemon_port)
+        session_port.remember(_port)
     subprocess.Popen(
         [sys.executable, "-m", "claude_code_ptt.daemon"],
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
@@ -65,11 +86,8 @@ def _ensure_daemon() -> None:
     )
     for _ in range(50):                    # first Whisper download can be slow
         time.sleep(0.2)
-        try:
-            _request("/status")
+        if _daemon_is_ours():
             return
-        except (urllib.error.URLError, OSError):
-            continue
     raise RuntimeError("PTT daemon did not come up")
 
 

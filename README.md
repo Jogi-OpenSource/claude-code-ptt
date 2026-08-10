@@ -43,16 +43,20 @@ Then start a **new** Claude Code session and press **Ctrl+M**.
 
 ## How it works
 
-- **One background daemon** owns the global hotkey, the microphone, local
-  Whisper transcription, text injection, text-to-speech and a floating
-  overlay that lists every running Claude Code session — click a row to
-  pick the delivery target.
+- **One background daemon** per logged-on Windows account owns the global
+  hotkey, the microphone, local Whisper transcription, text injection,
+  text-to-speech and a floating overlay that lists every running Claude
+  Code session — click a row to pick the delivery target.
 - **A thin MCP server** (installed once with `claude mcp add --scope user`)
   connects every Claude Code session to that daemon and lets Claude speak.
 - **Proven delivery:** hooks report back when the injected text is actually
   processed. The overlay shows the whole journey — recording, transcribing,
   sending, delivered — and if the session is busy working, the prompt is
   shown as queued instead of failed and confirms when the turn ends.
+- **A voice per session:** with several terminals open, every session gets
+  its own voice from `tts_voice`'s language, kept for as long as it runs —
+  so you hear which one is talking. A session that closes hands its voice
+  back to the next one.
 
 ## Configuration
 
@@ -63,16 +67,19 @@ again) for the changes to take effect.
 | Key | Default | What it does |
 |---|---|---|
 | `language` | `""` | Spoken language, as an ISO code such as `de`, `en`, `es`, `fr`. Empty means Whisper guesses per recording — accurate on clear speech, but near-silence can come back as a random language. Set it if you always speak the same one. |
-| `tts_voice` | `en-US-GuyNeural` | Voice for spoken replies. Run `python -m edge_tts --list-voices` to see all of them; pick a name matching your language, e.g. `de-DE-ConradNeural`, `es-ES-AlvaroNeural`. |
+| `tts_voice` | `en-US-GuyNeural` | Voice for spoken replies. Run `python -m edge_tts --list-voices` to see all of them; pick a name matching your language, e.g. `de-DE-ConradNeural`, `es-ES-AlvaroNeural`. Your first session speaks with it, further ones take the other voices of the same locale. |
+| `tts_rate` | `+0%` | Speaking rate for spoken replies. Use a signed percentage such as `+25%` or `-15%`. |
+| `tts_pitch` | `+0Hz` | Voice pitch for spoken replies. Use a signed frequency such as `+20Hz` or `-10Hz`. |
+| `tts_volume` | `+0%` | Volume for spoken replies. Use a signed percentage such as `+10%` or `-20%`. |
 | `whisper_model` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate and slower, and downloads on first use. |
 | `whisper_hotwords` | `""` | Words Whisper should be biased towards — names, commands, jargon it keeps mishearing. |
 | `hotkey_modifiers` / `hotkey_key` | `["ctrl"]` / `M` | The push-to-talk hotkey. Modifiers can be `ctrl`, `alt`, `shift`, `win`. |
-| `daemon_port` | `8377` | Localhost port the MCP adapter talks to. Change it only if something else owns that port. |
+| `daemon_port` | `8377` | Localhost port the daemon listens on. If a second Windows account is logged on and its daemon already owns that port, the adapter takes the next free one by itself, so every account keeps its own daemon and overlay. Change this only if something else owns the default. |
 
 ## Features
 
 - Local transcription (faster-whisper, no cloud, any language Whisper knows)
-- Spoken replies via `edge-tts` (free neural voices)
+- Spoken replies via `edge-tts` (free neural voices), one voice per session
 - OS-level mic auto-unmute for recording, previous state restored afterwards
 - Starting a recording interrupts Claude's speech
 - End-to-end delivery confirmation, queue-aware while the session is busy

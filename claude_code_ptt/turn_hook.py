@@ -9,6 +9,7 @@ import json
 import sys
 import urllib.request
 
+from . import session_port
 from .config import Config
 from .confirm_hook import _note, hook_cwd
 
@@ -20,8 +21,9 @@ def main() -> None:
             {"cwd": hook_cwd(payload), "state": "idle",
              "transcript": str(payload.get("transcript_path") or "")},
             ensure_ascii=False).encode("utf-8")
+        port = session_port.resolve(Config.load().daemon_port)
         req = urllib.request.Request(
-            f"http://127.0.0.1:{Config.load().daemon_port}/turn-state",
+            f"http://127.0.0.1:{port}/turn-state",
             data=body, headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=2).read()
     except Exception as exc:               # noqa: BLE001

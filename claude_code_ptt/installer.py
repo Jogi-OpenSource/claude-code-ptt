@@ -53,8 +53,46 @@ def _short_path(path: str) -> str:
     return short if short and " " not in short else ""
 
 
+def _script_path(name: str) -> Path | None:
+    """Locate a console executable installed alongside this package."""
+    candidates = [sysconfig.get_path("scripts"),
+                  sysconfig.get_path("scripts", scheme="nt_user"),
+                  str(Path(sys.executable).parent)]
+    for directory in candidates:
+        if not directory:
+            continue
+        for executable in (f"{name}.exe", name):
+            candidate = Path(directory) / executable
+            if candidate.exists():
+                return candidate
+    found = shutil.which(name)
+    return Path(found) if found else None
+
+
+def _executable_candidates(executable: str, arguments: str = "") -> list[str]:
+    """Shell spellings for one executable and its optional arguments."""
+    suffix = f" {arguments}" if arguments else ""
+    candidates = []
+    for path in (executable, _short_path(executable)):
+        if path and " " not in path:
+            candidates.append(path.replace("\\", "/") + suffix)
+    return candidates + [
+        f'cmd /c ""{executable}"{suffix}"',
+        f'"{executable}"{suffix}',
+        f'& "{executable}"{suffix}',
+    ]
+
+
+def _hook_candidate_groups(module: str) -> tuple[list[str], list[str]]:
+    hook = _script_path(f"claude-code-ptt-{module.replace('_', '-')}")
+    console = _executable_candidates(str(hook)) if hook is not None else []
+    module_forms = _executable_candidates(
+        sys.executable, f"-m claude_code_ptt.{module}")
+    return console, module_forms
+
+
 def _hook_candidates(module: str) -> list[str]:
-    """Every spelling of "run this module" worth trying, best first.
+    """Every spelling of "run this hook" worth trying, best first.
 
     Claude Code hands hook commands to whichever shell it inherited - cmd,
     PowerShell or bash have all been observed - and the three disagree about
@@ -63,19 +101,8 @@ def _hook_candidates(module: str) -> list[str]:
     the backslashes. None of them is right everywhere, so the installer tries
     them and keeps the one that provably runs (see _hook_command).
     """
-    candidates = []
-    for path in (sys.executable, _short_path(sys.executable)):
-        if path and " " not in path:
-            # Space-free path: no quoting needed, so no shell can disagree.
-            forward = path.replace("\\", "/")
-            candidates.append(f"{forward} -m claude_code_ptt.{module}")
-    exe = sys.executable
-    candidates += [
-        f'cmd /c ""{exe}" -m claude_code_ptt.{module}"',
-        f'"{exe}" -m claude_code_ptt.{module}',
-        f'& "{exe}" -m claude_code_ptt.{module}',
-    ]
-    return candidates
+    console, module_forms = _hook_candidate_groups(module)
+    return console + module_forms
 
 
 def _find_bash() -> str:
@@ -135,8 +162,8 @@ def _probe(line: str) -> bool:
 
 
 @lru_cache(maxsize=1)
-def _working_form() -> int:
-    """Index of the candidate that runs in every usable shell, probed once.
+def _working_form() -> tuple[str, int]:
+    """Command family and index that run in every usable shell, probed once.
 
     Which shell Claude Code hands the hook to is not ours to choose, so the
     winner has to survive all of them - each earlier quoting bug worked in
@@ -144,7 +171,8 @@ def _working_form() -> int:
     judged broken rather than strict (the WSL stub used to fail this way and
     took every candidate down with it), so it is dropped from the vote.
     """
-    candidates = _hook_candidates("confirm_hook")
+    console, module_forms = _hook_candidate_groups("confirm_hook")
+    candidates = console + module_forms
     results = [{name: _probe(line)
                 for name, line in _shell_lines(candidate).items()}
                for candidate in candidates]
@@ -152,26 +180,38 @@ def _working_form() -> int:
               if any(result[name] for result in results)]
     for index, result in enumerate(results):
         if usable and all(result[name] for name in usable):
-            return index
+            if index < len(console):
+                return "console", index
+            return "module", index - len(console)
     # Nothing provably ran - keep the first candidate rather than none at
     # all, and say so, because delivery confirmation is the visible casualty.
     print("  warning: no hook command form could be verified in any shell; "
           "delivery confirmation may stay silent")
-    return 0
+    if console:
+        return "console", 0
+    return "module", 0
 
 
 def _hook_command(module: str) -> str:
-    return _hook_candidates(module)[_working_form()]
+    family, index = _working_form()
+    console, module_forms = _hook_candidate_groups(module)
+    if family == "console" and index < len(console):
+        return console[index]
+    if family == "module" and index < len(module_forms):
+        return module_forms[index]
+    return module_forms[0]
 
 
 def _merge_hook(settings: dict, event: str, module: str) -> str:
     """Insert or refresh one hook entry; returns what happened."""
     entries = settings.setdefault("hooks", {}).setdefault(event, [])
-    marker = f"claude_code_ptt.{module}"
+    hook_name = f"claude-code-ptt-{module.replace('_', '-')}"
+    markers = (f"claude_code_ptt.{module}", hook_name)
     wanted = _hook_command(module)
     for entry in entries:
         for hook in entry.get("hooks", []):
-            if marker in str(hook.get("command", "")):
+            if any(marker in str(hook.get("command", ""))
+                   for marker in markers):
                 if hook["command"] == wanted:
                     return "ok"
                 hook["command"] = wanted       # stale interpreter path
@@ -213,18 +253,7 @@ def _adapter_path() -> Path | None:
     Scripts\\, so that guess registered a path that does not exist and Claude
     Code reported "Failed to connect" with nothing to go on.
     """
-    candidates = [sysconfig.get_path("scripts"),
-                  sysconfig.get_path("scripts", scheme="nt_user"),
-                  str(Path(sys.executable).parent)]
-    for directory in candidates:
-        if not directory:
-            continue
-        for name in ("claude-code-ptt-mcp.exe", "claude-code-ptt-mcp"):
-            candidate = Path(directory) / name
-            if candidate.exists():
-                return candidate
-    found = shutil.which("claude-code-ptt-mcp")
-    return Path(found) if found else None
+    return _script_path("claude-code-ptt-mcp")
 
 
 def _install_mcp() -> bool:

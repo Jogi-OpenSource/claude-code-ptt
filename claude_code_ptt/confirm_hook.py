@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 
+from . import session_port
 from .config import Config, config_dir
 
 
@@ -42,7 +43,7 @@ def main() -> None:
         if not prompt:
             _note("empty prompt, nothing to report")
             return
-        port = Config.load().daemon_port
+        port = session_port.resolve(Config.load().daemon_port)
         body = json.dumps(
             {"text": prompt, "cwd": hook_cwd(payload),
              "transcript": str(payload.get("transcript_path") or "")},

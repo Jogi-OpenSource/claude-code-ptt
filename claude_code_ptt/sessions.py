@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import itertools
 import logging
 import os
 import subprocess
@@ -70,9 +71,10 @@ def process_start_time(pid: int) -> int:
     registry sees does (cwd and label are shared by sibling sessions).
 
     0 means the question could not be answered - the process is gone, or
-    the handle was refused. Callers treat 0 as 'unknown', not as an
-    identity of its own: two unknowns compare equal and the registry is
-    back to plain pid matching for them."""
+    the handle was refused. 0 is NOT an identity: two processes the
+    question failed for are not thereby the same one. The registry never
+    stores it, it substitutes a stamp of its own (see
+    SessionRegistry._identity_stamp)."""
     handle = kernel32.OpenProcess(
         PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
@@ -199,14 +201,34 @@ class SessionRegistry:
         self._ranks: dict[tuple[int, int], float] = {}   # identity -> 1st seen
         self._voices = voices
         self._pin = (0, 0)                      # identity, (0, 0) = automatic
+        self._unknown = itertools.count(1)      # stand-in identity stamps
         threading.Thread(target=self._reaper, daemon=True).start()
+
+    def _identity_stamp(self, pid: int) -> int:
+        """The second half of a session's identity - never 0.
+
+        Creation time is the honest answer, but Windows may refuse it (the
+        handle denied, the process already gone) and process_start_time()
+        then reports 0. Storing that 0 would quietly shrink the identity
+        back to the bare pid: a stranger registering under a recycled
+        number answers 0 as well, compares equal, and inherits the user's
+        pick - the very thing the pin exists to prevent.
+
+        An unanswerable question therefore gets a stand-in: a counter,
+        negative so it can never collide with a real FILETIME, unique per
+        registration. Two unknowns never compare equal again. The price is
+        deliberate - while the creation time stays unreadable, a session
+        that re-registers counts as a new one and the target falls back to
+        the main session. Losing the pick costs one click; dictating into
+        a stranger's session cannot be taken back."""
+        return process_start_time(pid) or -next(self._unknown)
 
     def register(self, pid: int, cwd: str, static: bool = False) -> dict:
         """Static sessions have no heartbeating adapter (e.g. a manually
         added window); they live until their window disappears."""
         label = PureWindowsPath(cwd).name or cwd
         hwnd = find_session_window(pid)
-        started = process_start_time(pid)
+        started = self._identity_stamp(pid)
         with self._lock:
             # First registration wins, and it is remembered per session
             # identity instead of per entry: a heartbeat lapse deletes the
@@ -330,11 +352,14 @@ class SessionRegistry:
 
         Pinned is the session, not its number: the pid is stored with the
         creation time of the process behind it, so a stranger that later
-        inherits the pid does not inherit the click."""
+        inherits the pid does not inherit the click. A pid nobody can put
+        a creation time to stays unpinned (automatic) rather than pinned
+        to a number - the overlay only ever offers registered sessions,
+        which always carry an identity of their own."""
         with self._lock:
             info = self._sessions.get(pid)
             started = info["started"] if info else process_start_time(pid)
-            self._pin = (pid, started) if pid else (0, 0)
+            self._pin = (pid, started) if pid and started else (0, 0)
 
     def _main_pid(self) -> int:
         """The 'main session': the one that registered first and is still
@@ -353,7 +378,9 @@ class SessionRegistry:
         it exists. Sessions coming and going never move it.
 
         Only two things change the target: another click, or the chosen
-        session being gone - then it falls back to the main session. In
+        session being gone - then it falls back to the main session. Gone
+        means its process ended; a silent adapter is not a gone session
+        (see _reap). In
         automatic mode (nothing clicked) the main session is the target;
         focus tracking does not exist any more (removed in e608548), so
         'automatic' means exactly that fallback.
@@ -407,12 +434,25 @@ class SessionRegistry:
         cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
         alive = set(process_tree())
         with self._lock:
+            pinned, pin_started = self._pin
+            # The session the user picked is held to a stricter test than
+            # the rest: it expires when its PROCESS is gone, not when its
+            # adapter stops talking. A heartbeat lapse is the adapter's
+            # lapse; expiring the pinned entry on one would move dictation
+            # to the main session while the picked session is still up and
+            # running - the exact silent repointing the latch exists to
+            # prevent. Asked of the process itself (pid AND creation
+            # time), so a recycled number cannot answer for it.
+            pin_running = (pinned in self._sessions
+                           and process_start_time(pinned) == pin_started)
             dead = []
             for pid, info in self._sessions.items():
                 if info.get("static"):
                     if not user32.IsWindow(info["hwnd"]):
                         dead.append(pid)
                 elif info["last_seen"] < cutoff:
+                    if pid == pinned and pin_running:
+                        continue
                     dead.append(pid)
             for pid in dead:
                 log.info("session expired: %s (pid=%d)",

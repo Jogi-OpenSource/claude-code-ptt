@@ -9,8 +9,10 @@ next dictation then went into a worker instead of the main session.
 
 The rule now: the click is a latch. Nothing but another click moves the
 target, except the chosen session disappearing - then the MAIN session (the
-oldest still-registered one) takes over. Both halves are about a session,
-not a pid: a recycled pid is a stranger, and a session coming back from a
+oldest still-registered one) takes over. Disappearing means the process is
+gone, not its adapter falling silent for a while. Both halves are about a
+session, not a pid: a recycled pid is a stranger - even when Windows will
+not say when either of them started - and a session coming back from a
 heartbeat lapse keeps both its pin and its seniority.
 
 No GUI, no running daemon, no Win32 window lookup: `find_session_window` is
@@ -112,7 +114,25 @@ def test_target_falls_back_to_the_main_session_when_the_pick_is_gone(registry):
 
 def test_expired_pick_also_falls_back_to_the_main_session(registry):
     """Same fallback when the pick dies via the reaper instead of a clean
-    unregister (a killed worker never says goodbye)."""
+    unregister (a killed worker never says goodbye - it is gone from the
+    machine, which is what makes this a disappearance and not a lapse)."""
+    _register(registry, MAIN, "main")
+    _register(registry, WORKER, "worker-a")
+    registry.select(WORKER)
+
+    del PROCS[WORKER]                          # killed, so it never says so
+    registry._sessions[WORKER]["last_seen"] = (
+        time.monotonic() - sessions.HEARTBEAT_TIMEOUT - 1)
+    registry._reap()
+
+    assert registry.effective_pid() == MAIN
+
+
+def test_a_lapse_of_the_pick_alone_does_not_move_the_target(registry):
+    """A silent adapter is not a gone session. While the picked session's
+    process is still running, its own heartbeat lapse must not expire it
+    and hand dictation to the main session - the user would keep talking
+    into a window they never chose."""
     _register(registry, MAIN, "main")
     _register(registry, WORKER, "worker-a")
     registry.select(WORKER)
@@ -120,6 +140,29 @@ def test_expired_pick_also_falls_back_to_the_main_session(registry):
     registry._sessions[WORKER]["last_seen"] = (
         time.monotonic() - sessions.HEARTBEAT_TIMEOUT - 1)
     registry._reap()
+
+    assert WORKER in registry._sessions
+    assert registry.effective_pid() == WORKER
+
+
+def test_a_recycled_pid_does_not_inherit_the_pin_without_start_times(
+        registry, monkeypatch):
+    """Windows does not always answer 'when did this process start' - the
+    handle can be refused, and a process that just ended answers nothing
+    at all. Reading that silence as an identity would shrink a session
+    back to its bare number, and the next holder of the number would
+    inherit the user's pick. Same machine as the test above, with the
+    creation time unreadable throughout."""
+    monkeypatch.setattr(sessions, "process_start_time", lambda pid: 0)
+    _register(registry, MAIN, "main")
+    _register(registry, WORKER, "worker-a")
+    registry.select(WORKER)
+    assert registry.effective_pid() == WORKER
+
+    del PROCS[WORKER]                          # the worker's process ends
+    registry.unregister(WORKER)
+    PROCS[WORKER] = WORKER + 1                 # a stranger gets the number
+    _register(registry, WORKER, "worker-c")
 
     assert registry.effective_pid() == MAIN
 

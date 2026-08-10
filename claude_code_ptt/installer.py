@@ -78,52 +78,86 @@ def _hook_candidates(module: str) -> list[str]:
     return candidates
 
 
-def _shells() -> list[list[str]]:
-    """Every shell present that Claude Code might hand a hook command to."""
-    found = []
-    for parts in (["cmd", "/c"], ["powershell", "-NoProfile", "-Command"],
-                  ["bash", "-c"]):
-        if shutil.which(parts[0]):
-            found.append(parts)
-    return found
+def _find_bash() -> str:
+    """Git Bash, or "" if this machine has none.
+
+    Deliberately not shutil.which("bash"): on Windows 11 that finds the
+    WindowsApps stub that forwards to the Linux subsystem, which fails with
+    "no installed distributions" even where WSL was never set up. Git Bash
+    itself is usually not on PATH, so its two usual homes are checked.
+    """
+    found = shutil.which("bash")
+    if found and "windowsapps" not in found.lower():
+        return found
+    for base in (os.environ.get("ProgramFiles", ""),
+                 os.environ.get("ProgramFiles(x86)", ""),
+                 os.environ.get("LOCALAPPDATA", "")):
+        if not base:
+            continue
+        for tail in ("Git/bin/bash.exe", "Programs/Git/bin/bash.exe"):
+            candidate = Path(base) / tail
+            if candidate.exists():
+                return str(candidate)
+    return ""
 
 
-def _hook_runs(command: str) -> bool:
-    """True if the command reaches the module in every shell on this machine.
+def _shell_lines(command: str) -> dict[str, str]:
+    """The command as each shell would receive it, one full command line.
+
+    Built as strings rather than argument lists on purpose: list2cmdline
+    would add its own quoting, and quoting is the very thing under test.
+    """
+    lines = {"cmd": f"cmd /c {command}",
+             "powershell": f"powershell -NoProfile -Command {command}"}
+    bash = _find_bash()
+    if bash:
+        lines["bash"] = '"{}" -c \'{}\''.format(bash, command.replace("'", ""))
+    return lines
+
+
+def _probe(line: str) -> bool:
+    """Run one command line and report whether the hook logged a new entry.
 
     The hook appends to its own log on every run, successful or not, so a
-    fresh line proves the shell parsed the command and Python started. All
-    shells have to agree, because which one Claude Code uses is not ours to
-    choose - and each of the earlier quoting bugs worked in one and died in
-    another.
+    fresh line proves the shell parsed the command and Python started.
     """
     log = config_dir() / "confirm_hook.log"
+    before = log.stat().st_size if log.exists() else 0
     payload = json.dumps({"prompt": HOOK_PROBE_PROMPT, "cwd": ""})
-    for shell in _shells():
-        before = log.stat().st_size if log.exists() else 0
-        try:
-            subprocess.run(shell + [command], input=payload.encode("utf-8"),
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=20)
-        except (OSError, subprocess.SubprocessError):
-            return False
-        after = log.stat().st_size if log.exists() else 0
-        if after <= before:
-            return False
-    return True
+    try:
+        subprocess.run(line, input=payload.encode("utf-8"),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    after = log.stat().st_size if log.exists() else 0
+    return after > before
 
 
 @lru_cache(maxsize=1)
 def _working_form() -> int:
-    """Index of the first candidate that provably runs, probed once."""
-    for index, candidate in enumerate(_hook_candidates("confirm_hook")):
-        if _hook_runs(candidate):
+    """Index of the candidate that runs in every usable shell, probed once.
+
+    Which shell Claude Code hands the hook to is not ours to choose, so the
+    winner has to survive all of them - each earlier quoting bug worked in
+    one shell and died in another. A shell where *no* candidate runs is
+    judged broken rather than strict (the WSL stub used to fail this way and
+    took every candidate down with it), so it is dropped from the vote.
+    """
+    candidates = _hook_candidates("confirm_hook")
+    results = [{name: _probe(line)
+                for name, line in _shell_lines(candidate).items()}
+               for candidate in candidates]
+    usable = [name for name in results[0]
+              if any(result[name] for result in results)]
+    for index, result in enumerate(results):
+        if usable and all(result[name] for name in usable):
             return index
-    # Nothing provably ran - keep the plain quoted form rather than none at
+    # Nothing provably ran - keep the first candidate rather than none at
     # all, and say so, because delivery confirmation is the visible casualty.
-    print("  warning: no hook command form could be verified on this shell; "
+    print("  warning: no hook command form could be verified in any shell; "
           "delivery confirmation may stay silent")
-    return -2
+    return 0
 
 
 def _hook_command(module: str) -> str:

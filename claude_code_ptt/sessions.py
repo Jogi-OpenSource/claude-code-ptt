@@ -22,6 +22,13 @@ kernel32 = ctypes.windll.kernel32
 
 TH32CS_SNAPPROCESS = 0x2
 HEARTBEAT_TIMEOUT = 30.0
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# handles are pointers; without a restype ctypes truncates them to int
+kernel32.OpenProcess.restype = ctypes.c_void_p
+kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+kernel32.GetProcessTimes.argtypes = (
+    (ctypes.c_void_p,) + (ctypes.POINTER(wt.FILETIME),) * 4)
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -51,6 +58,33 @@ def process_tree() -> dict[int, tuple[int, str]]:
                 break
     kernel32.CloseHandle(snapshot)
     return tree
+
+
+def process_start_time(pid: int) -> int:
+    """When this process was created, as a raw FILETIME (0 = cannot tell).
+
+    Windows hands pids out again: the number of a session that ended can
+    belong to a stranger minutes later. Pid plus creation time is the
+    identity that survives that - it tells 'the session the user picked'
+    from 'whatever runs under its number now', and nothing else the
+    registry sees does (cwd and label are shared by sibling sessions).
+
+    0 means the question could not be answered - the process is gone, or
+    the handle was refused. Callers treat 0 as 'unknown', not as an
+    identity of its own: two unknowns compare equal and the registry is
+    back to plain pid matching for them."""
+    handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return 0
+    created, exited, in_kernel, in_user = (wt.FILETIME() for _ in range(4))
+    ok = kernel32.GetProcessTimes(
+        handle, ctypes.byref(created), ctypes.byref(exited),
+        ctypes.byref(in_kernel), ctypes.byref(in_user))
+    kernel32.CloseHandle(handle)
+    if not ok:
+        return 0
+    return (created.dwHighDateTime << 32) | created.dwLowDateTime
 
 
 MIN_WINDOW_SIZE = 50
@@ -162,8 +196,9 @@ class SessionRegistry:
         self._lock = threading.Lock()
         self._sessions: dict[int, dict] = {}    # pid -> info
         self._turns: dict[str, dict] = {}       # transcript key -> turn state
+        self._ranks: dict[tuple[int, int], float] = {}   # identity -> 1st seen
         self._voices = voices
-        self.selected_pid = 0                   # 0 = automatic (main session)
+        self._pin = (0, 0)                      # identity, (0, 0) = automatic
         threading.Thread(target=self._reaper, daemon=True).start()
 
     def register(self, pid: int, cwd: str, static: bool = False) -> dict:
@@ -171,16 +206,21 @@ class SessionRegistry:
         added window); they live until their window disappears."""
         label = PureWindowsPath(cwd).name or cwd
         hwnd = find_session_window(pid)
+        started = process_start_time(pid)
         with self._lock:
-            known = self._sessions.get(pid)
+            # First registration wins, and it is remembered per session
+            # identity instead of per entry: a heartbeat lapse deletes the
+            # entry outright (see _reap), and the adapter re-registers
+            # seconds later. Ranked by that second stamp, the main session
+            # would come back as the YOUNGEST of all - and _main_pid()
+            # would hand the automatic target to a spawned sub-session.
+            # Keyed by identity, a reused pid gets a fresh rank instead of
+            # inheriting the dead session's seniority.
+            rank = self._ranks.setdefault((pid, started), time.monotonic())
             self._sessions[pid] = {
                 "pid": pid, "cwd": cwd, "label": label, "hwnd": hwnd,
                 "static": static, "last_seen": time.monotonic(),
-                # First registration wins: a re-register (adapter restart,
-                # heartbeat lapse) must not make a session look younger
-                # than it is - _main_pid() ranks by exactly this stamp.
-                "registered": known["registered"] if known
-                else time.monotonic(),
+                "started": started, "registered": rank,
             }
         log.info("session registered: %s (pid=%d, hwnd=%d, static=%s)",
                  label, pid, hwnd, static)
@@ -286,8 +326,15 @@ class SessionRegistry:
         This is a LATCH - the user's click is the ONLY thing that moves it
         (pid 0 = automatic mode). Nothing in the daemon may overwrite it:
         not a session registering, not one ending, not focus. The single
-        automatic change is described in effective_pid()."""
-        self.selected_pid = pid
+        automatic change is described in effective_pid().
+
+        Pinned is the session, not its number: the pid is stored with the
+        creation time of the process behind it, so a stranger that later
+        inherits the pid does not inherit the click."""
+        with self._lock:
+            info = self._sessions.get(pid)
+            started = info["started"] if info else process_start_time(pid)
+            self._pin = (pid, started) if pid else (0, 0)
 
     def _main_pid(self) -> int:
         """The 'main session': the one that registered first and is still
@@ -309,16 +356,22 @@ class SessionRegistry:
         session being gone - then it falls back to the main session. In
         automatic mode (nothing clicked) the main session is the target;
         focus tracking does not exist any more (removed in e608548), so
-        'automatic' means exactly that fallback."""
+        'automatic' means exactly that fallback.
+
+        'Exists' means the pinned session, not merely its pid: a session
+        registering under a recycled pid is a stranger and gets the
+        fallback treatment, however familiar its number looks."""
         with self._lock:
-            if self.selected_pid in self._sessions:
-                return self.selected_pid
+            pid, started = self._pin
+            info = self._sessions.get(pid)
+            if info is not None and info["started"] == started:
+                return pid
             return self._main_pid()
 
     def unregister(self, pid: int) -> None:
-        """Session says goodbye: drop it. The pin STAYS on its pid - if
-        that session comes back (adapter restart, re-register), it is the
-        target again; while it is gone, effective_pid() serves the main
+        """Session says goodbye: drop it. The pin STAYS on that session -
+        if it comes back (adapter restart, re-register), it is the target
+        again; while it is gone, effective_pid() serves the main
         session. The voice stays reserved for the same reason: a goodbye
         comes from the adapter, and a restarted adapter says it for a
         session that keeps running. Only the reaper hands voices of gone
@@ -348,9 +401,11 @@ class SessionRegistry:
         """Drop sessions whose heartbeats stopped (static ones: whose
         window is gone), then free the voices of the processes that are
         really gone. A missed heartbeat is not a goodbye - the adapter
-        re-registers moments later and has to keep sounding the same, and
-        the pin is left alone here too (see unregister())."""
+        re-registers moments later and has to keep sounding the same, keep
+        its rank as the main session (see register()), and the pin is left
+        alone here too (see unregister())."""
         cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
+        alive = set(process_tree())
         with self._lock:
             dead = []
             for pid, info in self._sessions.items():
@@ -363,4 +418,9 @@ class SessionRegistry:
                 log.info("session expired: %s (pid=%d)",
                          self._sessions[pid]["label"], pid)
                 del self._sessions[pid]
-        self._voices.retain(set(process_tree()))
+            # Ranks outlive their entry on purpose, but only while the
+            # process can still come back - this is what keeps the map
+            # from growing for the whole life of the daemon.
+            for identity in [i for i in self._ranks if i[0] not in alive]:
+                del self._ranks[identity]
+        self._voices.retain(alive)

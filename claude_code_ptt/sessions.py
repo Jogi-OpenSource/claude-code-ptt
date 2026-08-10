@@ -157,7 +157,7 @@ class SessionRegistry:
         self._lock = threading.Lock()
         self._sessions: dict[int, dict] = {}    # pid -> info
         self._turns: dict[str, dict] = {}       # transcript key -> turn state
-        self.selected_pid = 0                   # 0 = automatic (focus tracking)
+        self.selected_pid = 0                   # 0 = automatic (main session)
         threading.Thread(target=self._reaper, daemon=True).start()
 
     def register(self, pid: int, cwd: str, static: bool = False) -> dict:
@@ -166,9 +166,15 @@ class SessionRegistry:
         label = PureWindowsPath(cwd).name or cwd
         hwnd = find_session_window(pid)
         with self._lock:
+            known = self._sessions.get(pid)
             self._sessions[pid] = {
                 "pid": pid, "cwd": cwd, "label": label, "hwnd": hwnd,
                 "static": static, "last_seen": time.monotonic(),
+                # First registration wins: a re-register (adapter restart,
+                # heartbeat lapse) must not make a session look younger
+                # than it is - _main_pid() ranks by exactly this stamp.
+                "registered": known["registered"] if known
+                else time.monotonic(),
             }
         log.info("session registered: %s (pid=%d, hwnd=%d, static=%s)",
                  label, pid, hwnd, static)
@@ -269,27 +275,48 @@ class SessionRegistry:
             return dict(self._sessions[pids[0]]) if pids else None
 
     def select(self, pid: int) -> None:
-        """Overlay click: pin this session as the PTT target."""
+        """Overlay click: pin this session as the PTT target.
+
+        This is a LATCH - the user's click is the ONLY thing that moves it
+        (pid 0 = automatic mode). Nothing in the daemon may overwrite it:
+        not a session registering, not one ending, not focus. The single
+        automatic change is described in effective_pid()."""
         self.selected_pid = pid
 
+    def _main_pid(self) -> int:
+        """The 'main session': the one that registered first and is still
+        alive. The registry knows nothing about a session's role - the
+        adapter reports only pid and cwd - so the oldest registration is
+        the simplest robust marker: the terminal the user works in is up
+        before the sessions it spawns (JogiLoop workers, sub-sessions).
+        Call with the lock held."""
+        if not self._sessions:
+            return 0
+        return min(self._sessions,
+                   key=lambda pid: self._sessions[pid]["registered"])
+
     def effective_pid(self) -> int:
-        """The acting target: the clicked session - or, when exactly one
-        session exists, that one automatically."""
+        """The acting target: the session the user clicked, for as long as
+        it exists. Sessions coming and going never move it.
+
+        Only two things change the target: another click, or the chosen
+        session being gone - then it falls back to the main session. In
+        automatic mode (nothing clicked) the main session is the target;
+        focus tracking does not exist any more (removed in e608548), so
+        'automatic' means exactly that fallback."""
         with self._lock:
             if self.selected_pid in self._sessions:
                 return self.selected_pid
-            if len(self._sessions) == 1:
-                return next(iter(self._sessions))
-        return 0
+            return self._main_pid()
 
     def unregister(self, pid: int) -> None:
-        """Session closes: drop it; a pinned target falls back to auto."""
+        """Session closes: drop it. The pin STAYS on its pid - if that
+        session comes back (adapter restart, re-register), it is the target
+        again; while it is gone, effective_pid() serves the main session."""
         with self._lock:
             info = self._sessions.pop(pid, None)
         if info:
             log.info("session unregistered: %s (pid=%d)", info["label"], pid)
-        if self.selected_pid == pid:
-            self.selected_pid = 0
 
     @property
     def selected_hwnd(self) -> int:
@@ -302,21 +329,24 @@ class SessionRegistry:
             info["hwnd"] = find_session_window(info["pid"])
         return info["hwnd"]
 
+    def _reap_once(self) -> None:
+        """Drop sessions whose heartbeat stopped (or whose window is gone).
+        The pin is left alone here too - see unregister()."""
+        cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
+        with self._lock:
+            dead = []
+            for pid, info in self._sessions.items():
+                if info.get("static"):
+                    if not user32.IsWindow(info["hwnd"]):
+                        dead.append(pid)
+                elif info["last_seen"] < cutoff:
+                    dead.append(pid)
+            for pid in dead:
+                log.info("session expired: %s (pid=%d)",
+                         self._sessions[pid]["label"], pid)
+                del self._sessions[pid]
+
     def _reaper(self) -> None:
         while True:
             time.sleep(5)
-            cutoff = time.monotonic() - HEARTBEAT_TIMEOUT
-            with self._lock:
-                dead = []
-                for pid, info in self._sessions.items():
-                    if info.get("static"):
-                        if not user32.IsWindow(info["hwnd"]):
-                            dead.append(pid)
-                    elif info["last_seen"] < cutoff:
-                        dead.append(pid)
-                for pid in dead:
-                    log.info("session expired: %s (pid=%d)",
-                             self._sessions[pid]["label"], pid)
-                    del self._sessions[pid]
-                if self.selected_pid in dead:
-                    self.selected_pid = 0
+            self._reap_once()

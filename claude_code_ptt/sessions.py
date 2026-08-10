@@ -341,7 +341,7 @@ class SessionRegistry:
         alive. The registry knows nothing about a session's role - the
         adapter reports only pid and cwd - so the oldest registration is
         the simplest robust marker: the terminal the user works in is up
-        before the sessions it spawns (JogiLoop workers, sub-sessions).
+        before the sessions it spawns (sub-agents, worker sessions).
         Call with the lock held."""
         if not self._sessions:
             return 0

@@ -9,11 +9,14 @@ in (see the /status endpoint), steps aside to a free port when the answer
 is a stranger's, and notes that port down here - beside the config, but
 per Windows session, because two sessions of the same account share the
 config file. The daemon and both hooks read the same note, so all four
-parts keep finding each other.
+parts keep finding each other. Stepping aside is serialised per session
+(see start_lock): adapters start in bunches, and each of them stepping
+aside on its own would leave one daemon per adapter.
 
 A machine with a single logged-on account never writes the note and stays
 on the configured port.
 """
+import contextlib
 import ctypes
 import socket
 import sys
@@ -22,6 +25,8 @@ from pathlib import Path
 from .config import config_dir
 
 PORT_SCAN = 20                             # ports tried from the configured one
+START_LOCK = "Local\\claude-code-ptt-daemon"   # Local\ = this Windows session
+START_LOCK_TIMEOUT = 60.0
 
 
 def session_id() -> int:
@@ -86,3 +91,60 @@ def free_port(configured: int) -> int:
         if not in_use(port):
             return port
     raise RuntimeError(f"no free daemon port near {configured}")
+
+
+def claim(configured: int) -> int:
+    """Pick the port this session's daemon gets and leave the note behind
+    that the daemon and both hooks follow.
+
+    Back on the configured port the note is removed instead of written:
+    every part falls back to it on its own, and a note outliving the
+    stranger that caused it would send the hooks to a dead port.
+
+    Only meaningful under start_lock() - between finding a port free and
+    the daemon actually binding it lies that daemon's whole startup."""
+    port = free_port(configured)
+    if port == configured:
+        note_file().unlink(missing_ok=True)
+    else:
+        remember(port)
+    return port
+
+
+@contextlib.contextmanager
+def start_lock():
+    """Let only one adapter of this Windows session start a daemon.
+
+    Adapters come up in bunches - one per Claude session the user opens -
+    and a starting daemon needs seconds before it binds its port. Without
+    this, each of them looks, finds nothing of ours listening yet, claims
+    a port of its own and spawns another daemon, the last one overwriting
+    the note. The lock is therefore held across the whole look-claim-
+    spawn-wait, not just the claim.
+
+    Windows releases a mutex when its owner dies, so a killed adapter
+    cannot lock the next one out. Waiting in vain runs on regardless: a
+    second daemon is a smaller failure than an adapter that never speaks
+    for its session again."""
+    if sys.platform != "win32":
+        yield
+        return
+    kernel32 = ctypes.windll.kernel32
+    # handles are pointers; without a restype ctypes truncates them to int
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.CreateMutexW(None, False, START_LOCK)
+    if not handle:
+        yield
+        return
+    # WAIT_OBJECT_0, or WAIT_ABANDONED for a mutex whose owner died
+    owned = kernel32.WaitForSingleObject(
+        handle, int(START_LOCK_TIMEOUT * 1000)) in (0x0, 0x80)
+    try:
+        yield
+    finally:
+        if owned:
+            kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)

@@ -53,13 +53,21 @@ def _request(path: str, payload: dict | None = None) -> dict:
         return json.loads(resp.read())
 
 
-def _daemon_is_ours() -> bool:
-    """Does a daemon of OUR Windows session answer on our port?
+def _found_our_daemon() -> bool:
+    """Is a daemon of OUR Windows session listening for us?
+
+    Re-reads the port note before asking, because the port this adapter
+    resolved at import time goes stale: another adapter of this session
+    may have stepped aside since and taken the daemon with it. Without
+    the re-read, this one would keep looking at the port the stranger
+    owns and start a second daemon of its own.
 
     A daemon started by another logged-on account answers on the same
     loopback port, but its overlay lives on a desktop we cannot see -
     talking to it would leave this session mute. A daemon too old to name
     its session counts as ours: on a machine with one account it is."""
+    global _port
+    _port = session_port.resolve(_config.daemon_port)
     try:
         status = _request("/status")
     except (urllib.error.URLError, OSError, ValueError):
@@ -71,23 +79,24 @@ def _daemon_is_ours() -> bool:
 
 def _ensure_daemon() -> None:
     global _port
-    if _daemon_is_ours():
+    if _found_our_daemon():
         return
-    if session_port.in_use(_port):
-        # a stranger owns this port - step aside and note the new one, so
-        # this session's hooks report their deliveries to the same daemon
-        _port = session_port.free_port(_config.daemon_port)
-        session_port.remember(_port)
-    subprocess.Popen(
-        [sys.executable, "-m", "claude_code_ptt.daemon"],
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        | subprocess.DETACHED_PROCESS,
-        close_fds=True,
-    )
-    for _ in range(50):                    # first Whisper download can be slow
-        time.sleep(0.2)
-        if _daemon_is_ours():
+    # One starter at a time per session: the others would look while this
+    # daemon boots, find its port still unbound and spawn one more.
+    with session_port.start_lock():
+        if _found_our_daemon():            # somebody was quicker
             return
+        _port = session_port.claim(_config.daemon_port)
+        subprocess.Popen(
+            [sys.executable, "-m", "claude_code_ptt.daemon"],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS,
+            close_fds=True,
+        )
+        for _ in range(50):                # first Whisper download can be slow
+            time.sleep(0.2)
+            if _found_our_daemon():
+                return
     raise RuntimeError("PTT daemon did not come up")
 
 

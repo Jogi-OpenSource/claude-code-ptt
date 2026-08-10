@@ -361,6 +361,35 @@ class SessionRegistry:
             started = info["started"] if info else process_start_time(pid)
             self._pin = (pid, started) if pid and started else (0, 0)
 
+    @staticmethod
+    def _pick_still_running(pinned: int, pin_started: int,
+                            alive: set[int]) -> bool:
+        """Is the process behind the user's pick still there?
+
+        The honest answer is its creation time - pid AND stamp, so a
+        recycled number cannot answer for the session that is gone. When
+        Windows refuses that question (process_start_time() == 0, see
+        there) the process list is the evidence that remains, and it
+        settles the case: a pid that is still running has not
+        disappeared, whatever its adapter is doing. Treating the silence
+        as 'some other process' instead would expire a session that is
+        plainly still up, on nothing but a heartbeat lapse - and hand
+        dictation to the main session, which is the silent repointing the
+        latch exists to prevent.
+
+        A readable time is still taken at its word, including against a
+        stand-in stamp: rights on a process do not change while it runs,
+        so a time that reads now where it did not before belongs to a
+        different process. Only a successor that refuses the question as
+        well can slip through, and it inherits nothing by doing so - the
+        pick's identity is checked again in effective_pid(), and a
+        stranger registering under the number overwrites the entry with a
+        stamp of its own."""
+        now = process_start_time(pinned)
+        if now:
+            return now == pin_started
+        return pinned in alive
+
     def _main_pid(self) -> int:
         """The 'main session': the one that registered first and is still
         alive. The registry knows nothing about a session's role - the
@@ -441,10 +470,12 @@ class SessionRegistry:
             # lapse; expiring the pinned entry on one would move dictation
             # to the main session while the picked session is still up and
             # running - the exact silent repointing the latch exists to
-            # prevent. Asked of the process itself (pid AND creation
-            # time), so a recycled number cannot answer for it.
+            # prevent. Asked of the process itself, not of the entry -
+            # by creation time where Windows gives one, by the process
+            # list where it does not (see _pick_still_running).
             pin_running = (pinned in self._sessions
-                           and process_start_time(pinned) == pin_started)
+                           and self._pick_still_running(
+                               pinned, pin_started, alive))
             dead = []
             for pid, info in self._sessions.items():
                 if info.get("static"):

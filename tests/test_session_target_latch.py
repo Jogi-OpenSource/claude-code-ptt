@@ -145,6 +145,47 @@ def test_a_lapse_of_the_pick_alone_does_not_move_the_target(registry):
     assert registry.effective_pid() == WORKER
 
 
+def test_a_lapse_of_the_pick_does_not_move_the_target_without_start_times(
+        registry, monkeypatch):
+    """The two hard cases at once: the picked session's adapter falls
+    silent AND Windows will not say when the process started. The pick
+    still has not disappeared - its pid is right there in the process list
+    - so it stays the target. Reading the unreadable start time as 'not
+    the same process' would expire a session that is plainly still
+    running, which is the lapse-repointing the latch exists to prevent."""
+    monkeypatch.setattr(sessions, "process_start_time", lambda pid: 0)
+    _register(registry, MAIN, "main")
+    _register(registry, WORKER, "worker-a")
+    registry.select(WORKER)
+    assert registry.effective_pid() == WORKER
+
+    registry._sessions[WORKER]["last_seen"] = (
+        time.monotonic() - sessions.HEARTBEAT_TIMEOUT - 1)
+    registry._reap()
+
+    assert WORKER in registry._sessions        # PROCS still lists it
+    assert registry.effective_pid() == WORKER
+
+
+def test_an_expired_pick_without_start_times_still_falls_back(
+        registry, monkeypatch):
+    """The other half of the same silence: once the pid is gone from the
+    process list there is nothing left to hold, so the fallback to the
+    main session happens as usual."""
+    monkeypatch.setattr(sessions, "process_start_time", lambda pid: 0)
+    _register(registry, MAIN, "main")
+    _register(registry, WORKER, "worker-a")
+    registry.select(WORKER)
+
+    del PROCS[WORKER]                          # killed, so it never says so
+    registry._sessions[WORKER]["last_seen"] = (
+        time.monotonic() - sessions.HEARTBEAT_TIMEOUT - 1)
+    registry._reap()
+
+    assert WORKER not in registry._sessions
+    assert registry.effective_pid() == MAIN
+
+
 def test_a_recycled_pid_does_not_inherit_the_pin_without_start_times(
         registry, monkeypatch):
     """Windows does not always answer 'when did this process start' - the

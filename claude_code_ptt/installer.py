@@ -4,6 +4,7 @@ Run via `claude-code-ptt install` (or `python -m claude_code_ptt.installer`).
 Idempotent: safe to run again after an update or a Python move - existing
 entries are updated in place, nothing is duplicated.
 """
+import ctypes
 import json
 import os
 import shutil
@@ -12,7 +13,10 @@ import sys
 import sysconfig
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
+
+from .config import config_dir
 
 # Set before anything imports huggingface_hub, which reads it once at import.
 # Its xet downloader assembles the file where a size check cannot see it, so
@@ -30,14 +34,100 @@ MCP_NAME = "jogi-ptt"
 HOOK_TIMEOUT = 5
 # event name -> module whose main() the hook runs
 HOOKS = {"Stop": "turn_hook", "UserPromptSubmit": "confirm_hook"}
+# Prompt text the hook probe sends: recognisable in the log, and harmless if
+# a running daemon sees it (no transcript is waiting on it).
+HOOK_PROBE_PROMPT = "claude-code-ptt install probe"
+
+
+def _short_path(path: str) -> str:
+    """The 8.3 spelling of a path, or "" where Windows has none.
+
+    Rescues installs under "C:\\Program Files\\...": the short form carries no
+    spaces, so the command needs no quotes and every shell parses it alike.
+    Short-name creation can be switched off system-wide, hence the empty
+    fallback - the caller just drops the candidate then.
+    """
+    buffer = ctypes.create_unicode_buffer(512)
+    length = ctypes.windll.kernel32.GetShortPathNameW(path, buffer, 512)
+    short = buffer.value if length else ""
+    return short if short and " " not in short else ""
+
+
+def _hook_candidates(module: str) -> list[str]:
+    """Every spelling of "run this module" worth trying, best first.
+
+    Claude Code hands hook commands to whichever shell it inherited - cmd,
+    PowerShell or bash have all been observed - and the three disagree about
+    quoting. A bare quoted path is a command in cmd but a string literal in
+    PowerShell; a cmd /c wrapper fixes PowerShell and breaks bash, which eats
+    the backslashes. None of them is right everywhere, so the installer tries
+    them and keeps the one that provably runs (see _hook_command).
+    """
+    candidates = []
+    for path in (sys.executable, _short_path(sys.executable)):
+        if path and " " not in path:
+            # Space-free path: no quoting needed, so no shell can disagree.
+            forward = path.replace("\\", "/")
+            candidates.append(f"{forward} -m claude_code_ptt.{module}")
+    exe = sys.executable
+    candidates += [
+        f'cmd /c ""{exe}" -m claude_code_ptt.{module}"',
+        f'"{exe}" -m claude_code_ptt.{module}',
+        f'& "{exe}" -m claude_code_ptt.{module}',
+    ]
+    return candidates
+
+
+def _shells() -> list[list[str]]:
+    """Every shell present that Claude Code might hand a hook command to."""
+    found = []
+    for parts in (["cmd", "/c"], ["powershell", "-NoProfile", "-Command"],
+                  ["bash", "-c"]):
+        if shutil.which(parts[0]):
+            found.append(parts)
+    return found
+
+
+def _hook_runs(command: str) -> bool:
+    """True if the command reaches the module in every shell on this machine.
+
+    The hook appends to its own log on every run, successful or not, so a
+    fresh line proves the shell parsed the command and Python started. All
+    shells have to agree, because which one Claude Code uses is not ours to
+    choose - and each of the earlier quoting bugs worked in one and died in
+    another.
+    """
+    log = config_dir() / "confirm_hook.log"
+    payload = json.dumps({"prompt": HOOK_PROBE_PROMPT, "cwd": ""})
+    for shell in _shells():
+        before = log.stat().st_size if log.exists() else 0
+        try:
+            subprocess.run(shell + [command], input=payload.encode("utf-8"),
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        after = log.stat().st_size if log.exists() else 0
+        if after <= before:
+            return False
+    return True
+
+
+@lru_cache(maxsize=1)
+def _working_form() -> int:
+    """Index of the first candidate that provably runs, probed once."""
+    for index, candidate in enumerate(_hook_candidates("confirm_hook")):
+        if _hook_runs(candidate):
+            return index
+    # Nothing provably ran - keep the plain quoted form rather than none at
+    # all, and say so, because delivery confirmation is the visible casualty.
+    print("  warning: no hook command form could be verified on this shell; "
+          "delivery confirmation may stay silent")
+    return -2
 
 
 def _hook_command(module: str) -> str:
-    # Claude Code runs hooks through whichever shell it inherited. PowerShell
-    # treats a leading quoted path as a string literal, not a command, so the
-    # bare '"python.exe" -m ...' form dies with a parser error there. Routing
-    # through cmd /c starts the line with a bare token both shells execute.
-    return f'cmd /c ""{sys.executable}" -m claude_code_ptt.{module}"'
+    return _hook_candidates(module)[_working_form()]
 
 
 def _merge_hook(settings: dict, event: str, module: str) -> str:

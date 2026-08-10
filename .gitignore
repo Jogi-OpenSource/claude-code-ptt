@@ -24,3 +24,6 @@ build/
 
 # Runtime artifacts
 *.log
+
+# Local Claude Code state (worktrees carry absolute paths)
+.claude/

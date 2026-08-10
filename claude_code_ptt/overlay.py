@@ -1,7 +1,7 @@
 """Floating always-on-top window listing all registered Claude Code sessions.
 
-One row per session; clicking a row pins it as the PTT target, clicking
-"Auto" returns to focus tracking. The target row mirrors the PTT state:
+One row per session; clicking a row pins it as the PTT target and only
+another click moves it. The target row mirrors the PTT state:
   recording      red dot + red frame on the row the text will land in
   transcribing   the row text "breathes" orange (soft pulse, no blinking)
   landed         the whole row flashes orange for one second, then normal

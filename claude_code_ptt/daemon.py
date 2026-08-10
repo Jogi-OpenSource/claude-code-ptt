@@ -4,8 +4,11 @@ Single instance per machine. Owns the global hotkey (default Ctrl+M) and the
 microphone; the MCP adapter talks to it over localhost HTTP.
 
 Delivery model: the target is ALWAYS an explicitly clicked session in the
-overlay - there is no focus tracking. A transcript without a valid target is
-held back ("ZIEL WAEHLEN") until the user picks one. After injection the
+overlay - there is no focus tracking. The click is a latch: sessions starting
+or ending never move it; only the chosen session disappearing hands the target
+back to the main session (see SessionRegistry.effective_pid). A transcript
+without a valid target is held back ("ZIEL WAEHLEN") until the user picks
+one. After injection the
 daemon waits for the session's confirm hook to report the prompt as actually
 processed; only that counts as delivered ("ANGEKOMMEN"). No confirmation
 within CONFIRM_TIMEOUT means delivery failure ("NICHT ANGEKOMMEN").

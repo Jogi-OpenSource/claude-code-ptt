@@ -66,7 +66,8 @@ def test_configured_webhook_receives_the_payload():
     finally:
         collector.close()
     assert collector.received == [
-        {"kind": "speak", "text": "hello", "session": "work"}]
+        {"kind": "speak", "source": events.SOURCE,
+         "text": "hello", "session": "work"}]
 
 
 def test_a_failing_listener_never_raises_to_the_caller():
@@ -86,5 +87,6 @@ def test_a_full_queue_drops_state_before_speak():
     queued = []
     while not events._queue.empty():
         queued.append(events._queue.get_nowait())
-    assert {"kind": "speak", "text": "keep me"} in queued
+    assert {"kind": "speak", "source": events.SOURCE,
+            "text": "keep me"} in queued
     assert len(queued) == events.QUEUE_MAX

@@ -90,6 +90,9 @@ another app — a status bar, an overlay, a second screen — can follow along:
 {"kind": "state", "state": "idle"}
 ```
 
+Every event also carries `"source": "claude-code-ptt"`, so a listener that
+receives state from several places can tell whose it is.
+
 `listening` carries the microphone level (0–1, ~10 updates a second) while
 recording; `thinking` covers transcription, `speaking` brackets the audible
 reply. Delivery is fire-and-forget with a 2 s timeout: a listener that is

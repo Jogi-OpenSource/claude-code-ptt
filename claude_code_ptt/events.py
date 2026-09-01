@@ -7,6 +7,9 @@ reports goes out as one JSON object with a `kind` field:
    "level": 0.0-1.0}      the microphone/reply state, level only while recording
   {"kind": "speak", "text": ..., "session": ...}   a reply was queued for TTS
 
+Each one also carries "source": "claude-code-ptt", so a listener fed from
+several places can tell whose state it is looking at.
+
 Delivery is fire-and-forget on a worker thread and failures are swallowed: a
 listener that is slow, gone or broken must never stall recording or playback.
 Only the oldest state is dropped from a backlog - a level from a second ago is
@@ -24,6 +27,7 @@ import urllib.request
 log = logging.getLogger("claude_code_ptt")
 
 TIMEOUT = 2.0                              # a listener gets this long, no more
+SOURCE = "claude-code-ptt"                 # stamped on every event
 QUEUE_MAX = 64
 
 _url = ""
@@ -48,7 +52,10 @@ def emit(kind: str, **fields) -> None:
     """Queue one event. Never raises, never blocks."""
     if not _url:
         return
-    payload = {"kind": kind, **fields}
+    # Every event says who sent it. A listener that also receives events
+    # from its own UI needs to tell them apart - "the microphone is open"
+    # from here means something different than a browser tab saying so.
+    payload = {"kind": kind, "source": SOURCE, **fields}
     try:
         _queue.put_nowait(payload)
     except queue.Full:

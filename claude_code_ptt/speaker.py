@@ -35,11 +35,16 @@ class Speaker:
     """
 
     def __init__(self, hold_while=None, *, rate: str = "+0%",
-                 pitch: str = "+0Hz", volume: str = "+0%"):
+                 pitch: str = "+0Hz", volume: str = "+0%", on_play=None):
         self.rate = rate
         self.pitch = pitch
         self.volume = volume
         self._hold_while = hold_while or (lambda: False)
+        # Called True when audible playback starts, False when it ends -
+        # the bracket around the voice, for listeners that want to duck
+        # other audio or show that the assistant is talking. Never raises
+        # out of here: a listener must not break playback.
+        self._on_play = on_play
         self._queue: queue.Queue[tuple[str, str, int]] = queue.Queue()
         self._interrupt = threading.Event()
         self._playing = threading.Event()
@@ -89,9 +94,18 @@ class Speaker:
         asyncio.run(communicate.save(str(path)))
         return path
 
+    def _notify_play(self, playing: bool) -> None:
+        if self._on_play is None:
+            return
+        try:
+            self._on_play(playing)
+        except Exception:                  # noqa: BLE001
+            log.debug("on_play listener failed", exc_info=True)
+
     def _play(self, path: Path) -> None:
         alias = f"ccptt_{uuid.uuid4().hex[:8]}"
         _mci(f'open "{path}" type mpegvideo alias {alias}')
+        self._notify_play(True)
         try:
             _mci(f"play {alias}")
             status = ctypes.create_unicode_buffer(32)
@@ -104,6 +118,7 @@ class Speaker:
                 threading.Event().wait(0.1)
         finally:
             _mci(f"close {alias}")
+            self._notify_play(False)
 
     def _worker(self) -> None:
         while True:

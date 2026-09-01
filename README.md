@@ -74,7 +74,27 @@ again) for the changes to take effect.
 | `whisper_model` | `small` | `tiny`, `base`, `small`, `medium` or `large-v3`. Larger is more accurate and slower, and downloads on first use. |
 | `whisper_hotwords` | `""` | Words Whisper should be biased towards — names, commands, jargon it keeps mishearing. |
 | `hotkey_modifiers` / `hotkey_key` | `["ctrl"]` / `M` | The push-to-talk hotkey. Modifiers can be `ctrl`, `alt`, `shift`, `win`. |
-| `daemon_port` | `8377` | Localhost port the daemon listens on. If a second Windows account is logged on and its daemon already owns that port, the adapter takes the next free one by itself, so every account keeps its own daemon and overlay. Change this only if something else owns the default. |
+| `daemon_port` | `8377` | Localhost port the daemon listens on. If a second Windows account is logged on and its daemon already owns that port, the next daemon takes the following free one by itself, so every account keeps its own daemon and overlay. Change this only if something else owns the default. |
+| `event_webhook` | `""` | URL that gets a POST for every state change — see below. Empty means nothing is sent. |
+
+### Event webhook
+
+Set `event_webhook` to a URL and the daemon mirrors what it is doing there, so
+another app — a status bar, an overlay, a second screen — can follow along:
+
+```json
+{"kind": "state", "state": "listening", "level": 0.42}
+{"kind": "state", "state": "thinking"}
+{"kind": "speak",  "text": "…", "session": "my-project"}
+{"kind": "state", "state": "speaking"}
+{"kind": "state", "state": "idle"}
+```
+
+`listening` carries the microphone level (0–1, ~10 updates a second) while
+recording; `thinking` covers transcription, `speaking` brackets the audible
+reply. Delivery is fire-and-forget with a 2 s timeout: a listener that is
+slow, broken or gone never delays recording or playback, and nothing is
+retried.
 
 ## Features
 

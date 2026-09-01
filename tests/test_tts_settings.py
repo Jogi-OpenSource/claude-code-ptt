@@ -67,7 +67,7 @@ def test_daemon_passes_configured_voice_controls_to_speaker(monkeypatch):
 
     class FakeSpeaker:
         def __init__(self, rate=None, pitch=None, volume=None,
-                     hold_while=None):
+                     hold_while=None, on_play=None):
             received.update(
                 rate=rate,
                 pitch=pitch,
@@ -83,7 +83,7 @@ def test_daemon_passes_configured_voice_controls_to_speaker(monkeypatch):
             pass
 
     recorder = SimpleNamespace(recording=False)
-    monkeypatch.setattr(daemon, "Recorder", lambda: recorder)
+    monkeypatch.setattr(daemon, "Recorder", lambda **kwargs: recorder)
     monkeypatch.setattr(daemon, "MicMute", lambda: object())
     monkeypatch.setattr(daemon, "Transcriber", lambda *args: object())
     monkeypatch.setattr(daemon, "Speaker", FakeSpeaker)

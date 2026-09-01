@@ -31,6 +31,10 @@ class Config:
     tts_volume: str = "+0%"
     # Daemon HTTP port for the MCP adapter (localhost only).
     daemon_port: int = 8377
+    # Optional URL that mirrors daemon events (recording state, spoken
+    # replies) to another app - a status bar, an overlay, a phone screen.
+    # Empty = no events are sent. See events.py for the payloads.
+    event_webhook: str = ""
 
     @classmethod
     def load(cls) -> "Config":

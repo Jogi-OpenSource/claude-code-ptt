@@ -8,12 +8,19 @@ SAMPLE_RATE = 16_000
 
 
 class Recorder:
-    """Start/stop recording from the default input device."""
+    """Start/stop recording from the default input device.
 
-    def __init__(self):
+    `on_level` (optional) is called with the loudness of each captured block
+    (0.0-1.0) - enough for a level meter. It runs on the audio callback
+    thread, so it must return immediately and must never raise; a listener
+    that throws would otherwise kill the capture stream mid-recording.
+    """
+
+    def __init__(self, on_level=None):
         self._chunks: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
+        self._on_level = on_level
 
     @property
     def recording(self) -> bool:
@@ -34,6 +41,11 @@ class Recorder:
 
     def _on_audio(self, indata, _frames, _time, _status) -> None:
         self._chunks.append(indata.copy())
+        if self._on_level is not None:
+            try:
+                self._on_level(float(np.abs(indata).max()))
+            except Exception:              # noqa: BLE001
+                pass                       # a listener must never stop capture
 
     def stop(self) -> np.ndarray:
         """Stop and return the recording as a mono float32 array."""

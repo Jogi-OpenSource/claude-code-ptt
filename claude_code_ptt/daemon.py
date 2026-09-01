@@ -1,7 +1,8 @@
 """The claude-code-ptt daemon: hotkey -> record -> transcribe -> inject.
 
-Single instance per machine. Owns the global hotkey (default Ctrl+M) and the
-microphone; the MCP adapter talks to it over localhost HTTP.
+One instance per Windows session (see session_port.claim_instance). Owns the
+global hotkey (default Ctrl+M) and the microphone; the MCP adapter talks to
+it over localhost HTTP.
 
 Delivery model: the target is ALWAYS an explicitly clicked session in the
 overlay - there is no focus tracking. The click is a latch: sessions starting
@@ -23,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import http_api, session_port
+from . import events, http_api, session_port
 from .config import Config, config_dir
 from .cues import play_cue
 from .injector import inject_text
@@ -48,6 +49,7 @@ QUEUE_GRACE = 5.0                          # after turn end: time to confirm
 QUEUE_MAX = 60 * 60.0                      # give up on a queued prompt after
 MAX_PENDING_SENDS = 8
 TRANSCRIPT_TAIL = 120
+LEVEL_INTERVAL = 0.1                       # seconds between mic level events
 
 
 def _transcript_texts(path: str) -> tuple[list[str], list[str]]:
@@ -90,7 +92,8 @@ log = logging.getLogger("claude_code_ptt")
 class Daemon:
     def __init__(self, config: Config):
         self.config = config
-        self.recorder = Recorder()
+        events.configure(config.event_webhook)
+        self.recorder = Recorder(on_level=self._on_mic_level)
         self.mic_mute = MicMute()
         self.transcriber = Transcriber(config.whisper_model, config.language,
                                        config.whisper_hotwords)
@@ -99,6 +102,7 @@ class Daemon:
             pitch=config.tts_pitch,
             volume=config.tts_volume,
             hold_while=lambda: self.recorder.recording,
+            on_play=self._on_speaking,
         )
         self.voices = VoicePool(config.tts_voice)
         self.voices.prefetch()             # long before the first session
@@ -113,6 +117,7 @@ class Daemon:
         self._sends_lock = threading.Lock()
         self._failed = False
         self._flash_until = 0.0
+        self._last_level_at = 0.0
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
         threading.Thread(target=self._transcript_watchdog,
                          daemon=True).start()
@@ -166,6 +171,33 @@ class Daemon:
         uses the configured voice."""
         voice = self.voices.voice_for(pid) if pid else self.voices.default
         self.speaker.speak(text, voice, pid)
+        events.emit("speak", text=text, session=self._session_label(pid))
+
+    def _session_label(self, pid: int) -> str:
+        """Which session a reply came from, as the user knows it: the window
+        title they gave the terminal, else the working directory's name."""
+        for row in self.registry.list():
+            if row.get("pid") == pid:
+                return row.get("title") or row.get("label") or ""
+        return ""
+
+    def _on_speaking(self, playing: bool) -> None:
+        """Audible playback started/ended. A listener uses the bracket to
+        duck other audio; recording wins, so a reply cut off by the mic
+        reports idle here and the microphone's own event follows."""
+        events.emit("state", state="speaking" if playing else "idle")
+
+    def _on_mic_level(self, level: float) -> None:
+        """Loudness of the last captured block, throttled for listeners.
+
+        The audio callback fires ~30x a second; a listener animating a meter
+        cannot use that and a webhook must not carry it. One update every
+        LEVEL_INTERVAL seconds is enough to look live."""
+        now = time.monotonic()
+        if now - self._last_level_at < LEVEL_INTERVAL:
+            return
+        self._last_level_at = now
+        events.emit("state", state="listening", level=round(level, 3))
 
     def toggle(self) -> None:
         if self.recorder.recording:
@@ -175,6 +207,7 @@ class Daemon:
             # blue idle gap between recording stop and transcription start
             self._transcribing += 1
             play_cue("record_stop")
+            events.emit("state", state="thinking")
             log.info("recording stopped (%.1fs), transcribing...",
                      audio.size / 16_000)
             threading.Thread(target=self._finish, args=(audio,),
@@ -187,6 +220,7 @@ class Daemon:
             self.mic_mute.open_for_recording()
             self.recorder.start()
             play_cue("record_start")
+            events.emit("state", state="listening", level=0.0)
             log.info("recording started")
 
     def _confirm_send(self, send: dict, source: str) -> None:
@@ -300,19 +334,26 @@ class Daemon:
                             send["text"][:40])
 
     def _finish(self, audio) -> None:
+        # Every exit that does NOT hand text to a session releases the
+        # "thinking" state again: nobody else will, and a listener would sit
+        # on it forever. A delivered transcript deliberately stays thinking -
+        # the session is working on it now, and its reply ends the state.
         try:
             try:
                 text = self.transcriber.transcribe(audio)
             except Exception:              # noqa: BLE001
                 log.exception("transcription failed")
+                events.emit("state", state="idle")
                 return
             if not text:
                 play_cue("error")
+                events.emit("state", state="idle")
                 log.info("empty transcript, nothing to inject")
                 return
             if not self.registry.selected_hwnd:
                 self._pending_text = text
                 play_cue("error")
+                events.emit("state", state="idle")
                 log.info("no target selected - transcript held back")
                 return
             self._deliver_wrapped(text)
@@ -361,9 +402,11 @@ class Daemon:
                       "change it in %s", "+".join(self.config.hotkey_modifiers),
                       self.config.hotkey_key, config_dir() / "config.json")
             sys.exit(1)
-        # the adapter may have had to step aside from the configured port
-        # (another logged-on account's daemon already owns it)
-        http_api.start(self, session_port.resolve(self.config.daemon_port))
+        # the configured port may already belong to another logged-on
+        # account's daemon - the bind settles that, and the note tells the
+        # adapter and both hooks of this session where we ended up
+        port = http_api.start(self, self.config.daemon_port)
+        session_port.announce(port, self.config.daemon_port)
         log.info("ready - hotkey %s+%s toggles recording",
                  "+".join(self.config.hotkey_modifiers),
                  self.config.hotkey_key)
@@ -384,6 +427,15 @@ def main() -> None:
             logging.FileHandler(log_dir / "daemon.log", encoding="utf-8"),
         ],
     )
+    if sys.platform != "win32":
+        log.error("claude-code-ptt currently supports Windows only")
+        sys.exit(1)
+    if not session_port.claim_instance():
+        # every adapter that finds no daemon spawns one; only the first of
+        # them becomes it, the rest stop here - before the microphone, the
+        # overlay and the port are taken
+        log.info("a daemon of this Windows session is already running")
+        return
     # Native crashes (access violations in ctypes/Win32 calls) kill the
     # process without a Python traceback; faulthandler dumps the stacks of
     # all threads to crash.log. The file object must stay referenced for
@@ -394,9 +446,6 @@ def main() -> None:
                      f" (pid={os.getpid()}) ---\n")
     _crash_log.flush()
     faulthandler.enable(_crash_log, all_threads=True)
-    if sys.platform != "win32":
-        log.error("claude-code-ptt currently supports Windows only")
-        sys.exit(1)
     Daemon(Config.load()).run()
 
 

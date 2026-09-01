@@ -63,7 +63,7 @@ def _daemon(monkeypatch) -> tuple[daemon.Daemon, list]:
             queued.append((text, voice, origin))
 
     monkeypatch.setattr(daemon, "Recorder",
-                        lambda: SimpleNamespace(recording=False))
+                        lambda **kwargs: SimpleNamespace(recording=False))
     monkeypatch.setattr(daemon, "MicMute", lambda: object())
     monkeypatch.setattr(daemon, "Transcriber", lambda *args: object())
     monkeypatch.setattr(daemon, "Speaker", FakeSpeaker)

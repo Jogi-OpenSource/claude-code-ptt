@@ -47,6 +47,7 @@ CONFIRM_TIMEOUT = 8.0
 FLASH_SECONDS = 2.0
 QUEUE_GRACE = 5.0                          # after turn end: time to confirm
 QUEUE_MAX = 60 * 60.0                      # give up on a queued prompt after
+UNQUEUED_BUSY_MAX = 30.0                   # busy session: wait for the enqueue
 MAX_PENDING_SENDS = 8
 TRANSCRIPT_TAIL = 120
 LEVEL_INTERVAL = 0.1                       # seconds between mic level events
@@ -85,6 +86,28 @@ def _transcript_texts(path: str) -> tuple[list[str], list[str]]:
                 if isinstance(part, dict) and part.get("type") == "text":
                     processed.append(str(part.get("text") or ""))
     return queued, processed
+
+def _send_expired(send: dict, now: float, busy: bool) -> bool:
+    """Whether a pending send counts as lost.
+
+    A send proven to sit in the session's queue survives while the session
+    works; once it idles it must confirm within QUEUE_GRACE. A send never
+    seen in the queue only gets UNQUEUED_BUSY_MAX while the session is busy:
+    a mid-turn enqueue lands in the transcript within about a second, so a
+    text still missing after that never arrived - holding it longer kept the
+    overlay on SENDE for every following message."""
+    age = now - send["started"]
+    if send["queued"]:
+        if busy:
+            send["idle_since"] = None
+            return age >= QUEUE_MAX
+        if send["idle_since"] is None:
+            send["idle_since"] = now
+        return now - send["idle_since"] >= QUEUE_GRACE
+    if now <= send["deadline"]:
+        return False
+    return not (busy and age < UNQUEUED_BUSY_MAX)
+
 
 log = logging.getLogger("claude_code_ptt")
 
@@ -303,26 +326,10 @@ class Daemon:
             with self._sends_lock:
                 sends = list(self._sends)
             for send in sends:
-                age = now - send["started"]
                 busy = self.registry.is_busy_transcript(
                     send["transcript"]
                     or self.registry.transcript_for(send["pid"]))
-                if send["queued"]:
-                    # Proven queued: survives while its session works; once
-                    # the session idles it must confirm within the grace
-                    # window or it really got lost.
-                    if busy:
-                        send["idle_since"] = None
-                        if age < QUEUE_MAX:
-                            continue
-                    else:
-                        if send["idle_since"] is None:
-                            send["idle_since"] = now
-                        if now - send["idle_since"] < QUEUE_GRACE:
-                            continue
-                elif now <= send["deadline"] or (busy and age < QUEUE_MAX):
-                    # Within the normal window, or the session is mid-turn
-                    # and the transcript may simply lag.
+                if not _send_expired(send, now, busy):
                     continue
                 with self._sends_lock:
                     if send in self._sends:

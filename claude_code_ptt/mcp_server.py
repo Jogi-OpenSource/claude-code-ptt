@@ -85,10 +85,13 @@ def _ensure_daemon() -> None:
     # port that one noted down.
     if _found_our_daemon():
         return
+    # CREATE_NO_WINDOW, not DETACHED_PROCESS: a detached venv launcher has no
+    # console, so the real interpreter it starts allocates a fresh, visible
+    # one. A hidden console is inherited instead. Logs still go to daemon.log.
     subprocess.Popen(
         [sys.executable, "-m", "claude_code_ptt.daemon"],
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        | subprocess.DETACHED_PROCESS,
+        | subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
     for _ in range(50):                    # first Whisper download can be slow

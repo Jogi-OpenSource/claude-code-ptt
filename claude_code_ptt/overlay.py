@@ -152,7 +152,7 @@ class Overlay:
                 bg, fg, dot_fg, border = base_bg, base_fg, base_bg, base_bg
 
                 if is_target and recording:
-                    # Jogi's pick: the whole row breathes red, white text
+                    # recording: the whole row breathes red, white text
                     bg = _mix(ROW_BG, RED, pulse)
                     fg, dot_fg, border = "white", "white", bg
                 elif is_target and state["phase"] == "transcribing":

@@ -22,6 +22,8 @@ from .session_port import session_id
 
 log = logging.getLogger("claude_code_ptt")
 
+PORT_SCAN = 20                             # ports tried from the configured one
+
 
 def make_handler(daemon):
     class Handler(BaseHTTPRequestHandler):
@@ -126,7 +128,29 @@ def make_handler(daemon):
     return Handler
 
 
-def start(daemon, port: int) -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(daemon))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    log.info("HTTP API on 127.0.0.1:%d", port)
+class _Server(ThreadingHTTPServer):
+    # HTTPServer switches SO_REUSEADDR on, and on Windows that lets a
+    # second bind take over a port somebody already owns (measured) -
+    # which is exactly what must not happen here.
+    allow_reuse_address = False
+
+
+def start(daemon, configured: int) -> int:
+    """Serve on the first port from the configured one upwards that binds,
+    and return it.
+
+    The bind IS the claim. Asking first whether a port is free and binding
+    it afterwards leaves a gap of seconds - this daemon's whole startup -
+    and the daemon of another logged-on account looks at the same loopback
+    in that gap, gets the same answer and takes the port. Whoever binds
+    second simply moves up one."""
+    handler = make_handler(daemon)
+    for port in range(configured, configured + PORT_SCAN):
+        try:
+            server = _Server(("127.0.0.1", port), handler)
+        except OSError:
+            continue
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        log.info("HTTP API on 127.0.0.1:%d", port)
+        return port
+    raise RuntimeError(f"no free daemon port near {configured}")

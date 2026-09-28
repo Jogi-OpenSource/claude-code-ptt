@@ -2,16 +2,17 @@
 
 With two accounts logged on, the other one's daemon answers on the same
 loopback port while its overlay hangs on a desktop we cannot see. The
-adapter has to recognise that, step aside to a free port, and leave a note
-the daemon and both hooks of this session follow - and a machine with a
-single account must behave exactly as it did before.
+adapter has to recognise that and start one of its own; that daemon has to
+get a port even though the stranger's daemon chooses at the same moment,
+and has to leave a note the adapter and both hooks of this session follow -
+and a machine with a single account must behave exactly as it did before.
 
 No daemon is ever started here: the adapter's spawn is recorded, not run.
 """
-import contextlib
+import json
+import os
 import socket
 import threading
-import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -32,20 +33,22 @@ def _notes_in(monkeypatch, tmp_path):
 
 def _adapter(monkeypatch, tmp_path, answers: dict[int, dict]):
     """The adapter on a machine where `answers` says who replies on which
-    port; ports not listed are silent. Spawning a daemon puts one of our
-    own on the port the adapter settled for, as it would in reality.
-    Returns the list the spawns are recorded in."""
+    port; ports not listed are silent. A spawned daemon does what the real
+    one does: it binds the first port nobody else answers on and notes it
+    down. Returns the list the spawns are recorded in."""
     spawned: list[list[str]] = []
     _notes_in(monkeypatch, tmp_path)
     monkeypatch.setattr(mcp_server, "_config", Config(daemon_port=8377))
     monkeypatch.setattr(mcp_server, "_windows_session", OURS)
     monkeypatch.setattr(mcp_server, "_port", 8377)
     monkeypatch.setattr(mcp_server.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(session_port, "in_use", lambda port: port in answers)
 
     def spawn(command, **kwargs):
         spawned.append(command)
-        answers[mcp_server._port] = _status(OURS)
+        port = next(p for p in range(8377, 8377 + http_api.PORT_SCAN)
+                    if p not in answers)
+        answers[port] = _status(OURS)
+        session_port.announce(port, 8377)
 
     def request(path, payload=None):
         if mcp_server._port not in answers:
@@ -55,6 +58,25 @@ def _adapter(monkeypatch, tmp_path, answers: dict[int, dict]):
     monkeypatch.setattr(mcp_server.subprocess, "Popen", spawn)
     monkeypatch.setattr(mcp_server, "_request", request)
     return spawned
+
+
+def _recorded(monkeypatch, answers: dict[int, dict],
+              known: bool = True) -> list[tuple[str, int]]:
+    """Record every request with the port it actually went to - what the
+    adapter believes about the port is the whole point here. `known` is what
+    the daemon says about our registration."""
+    asked: list[tuple[str, int]] = []
+
+    def request(path, payload=None):
+        asked.append((path, mcp_server._port))
+        if mcp_server._port not in answers:
+            raise urllib.error.URLError("connection refused")
+        if path == "/status":
+            return answers[mcp_server._port]
+        return {"ok": known}
+
+    monkeypatch.setattr(mcp_server, "_request", request)
+    return asked
 
 
 def _feed(monkeypatch, payload: bytes) -> None:
@@ -72,6 +94,29 @@ def _status(session: int | None) -> dict:
     return status
 
 
+def _daemon_stub():
+    """Just enough daemon for the /status endpoint to answer."""
+    return SimpleNamespace(
+        recorder=SimpleNamespace(recording=False),
+        speaker=SimpleNamespace(playing=False),
+        target_hwnd=lambda: 0,
+    )
+
+
+def _free_port() -> int:
+    """A port nobody owns at this moment - where a daemon under test starts
+    looking."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _status_of(port: int) -> dict:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/status",
+                                timeout=5) as answer:
+        return json.loads(answer.read())
+
+
 def test_a_single_account_stays_on_the_configured_port(monkeypatch, tmp_path):
     _notes_in(monkeypatch, tmp_path)
 
@@ -82,7 +127,7 @@ def test_a_single_account_stays_on_the_configured_port(monkeypatch, tmp_path):
 def test_the_noted_port_wins_over_the_configured_one(monkeypatch, tmp_path):
     _notes_in(monkeypatch, tmp_path)
 
-    session_port.remember(8378)
+    session_port.announce(8378, 8377)
 
     assert session_port.resolve(8377) == 8378
 
@@ -91,7 +136,7 @@ def test_every_windows_session_keeps_its_own_note(monkeypatch, tmp_path):
     """Two sessions of the SAME account share config.json - only the note
     per Windows session tells their daemons apart."""
     _notes_in(monkeypatch, tmp_path)
-    session_port.remember(8378)
+    session_port.announce(8378, 8377)
     monkeypatch.setattr(session_port, "session_id", lambda: STRANGER)
 
     assert session_port.resolve(8377) == 8377
@@ -105,21 +150,52 @@ def test_an_unreadable_note_falls_back_to_the_configured_port(
     assert session_port.resolve(8377) == 8377
 
 
-def test_a_free_port_is_searched_from_the_configured_one_upwards():
-    with socket.socket() as taken:
-        taken.bind(("127.0.0.1", 0))
-        taken.listen(1)
-        port = taken.getsockname()[1]
-        # asked repeatedly: the answer must not change with the listener's
-        # backlog, or a busy daemon would look like a free port
-        assert [session_port.in_use(port) for _ in range(3)] == [True] * 3
+def test_the_note_goes_when_the_configured_port_is_free_again(
+        monkeypatch, tmp_path):
+    """The other account logged off: the next daemon takes the default
+    port back, and a note still pointing elsewhere would mute the hooks."""
+    _notes_in(monkeypatch, tmp_path)
+    session_port.announce(8378, 8377)
 
-        chosen = session_port.free_port(port)
+    session_port.announce(8377, 8377)
 
-        assert chosen > port
-        assert not session_port.in_use(chosen)
+    assert session_port.resolve(8377) == 8377
+    assert list(tmp_path.iterdir()) == []
 
-    assert not session_port.in_use(port)
+
+def test_two_daemons_starting_at_once_get_a_port_each():
+    """The reproduced case from the daemons' side: two logged-on accounts
+    start theirs in the same moment. A free-port lookup would hand both the
+    same answer and one of them would end up without a daemon - only the
+    bind decides, and whoever loses it moves up."""
+    base = _free_port()
+    both_there = threading.Barrier(2)
+    ports: list[int] = []
+
+    def start():
+        both_there.wait()
+        ports.append(http_api.start(_daemon_stub(), base))
+
+    threads = [threading.Thread(target=start) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(set(ports)) == 2             # neither was left without one
+    assert min(ports) == base               # and nobody drifted off for fun
+    for port in ports:
+        assert _status_of(port)["session"] == session_port.session_id()
+
+
+def test_only_one_daemon_per_windows_session_claims_the_instance(monkeypatch):
+    """Every adapter that finds no daemon spawns one; all but the first
+    must step back before they take a microphone, an overlay or a port."""
+    monkeypatch.setattr(session_port, "INSTANCE_MUTEX",
+                        f"Local\\claude-code-ptt-test-{os.getpid()}")
+
+    assert session_port.claim_instance()
+    assert not session_port.claim_instance()
 
 
 def test_the_daemon_of_this_session_is_ours(monkeypatch, tmp_path):
@@ -187,12 +263,12 @@ def test_a_foreign_daemon_pushes_the_adapter_to_a_free_port(
 
 def test_a_later_adapter_joins_the_daemon_instead_of_adding_one(
         monkeypatch, tmp_path):
-    """Every adapter resolves its port once, at import time. The one that
-    steps aside notes the new port down afterwards - a sibling still
-    holding the stranger's port must pick that up, or it starts a second
-    daemon and overwrites the note on its way."""
+    """Every adapter resolves its port once, at import time. The daemon
+    that stepped aside notes the new port down - a sibling adapter still
+    holding the stranger's port must pick that up, or it spawns daemon
+    after daemon."""
     spawned = _adapter(monkeypatch, tmp_path, {8377: _status(STRANGER)})
-    mcp_server._ensure_daemon()            # steps aside to 8378
+    mcp_server._ensure_daemon()            # daemon lands on 8378
 
     monkeypatch.setattr(mcp_server, "_port", 8377)   # sibling, still stale
     mcp_server._ensure_daemon()
@@ -202,77 +278,70 @@ def test_a_later_adapter_joins_the_daemon_instead_of_adding_one(
     assert session_port.resolve(8377) == 8378
 
 
-def test_the_lock_is_held_until_the_daemon_answers(monkeypatch, tmp_path):
-    """Releasing it right after the spawn would be no lock at all: the gap
-    a sibling walks into IS the daemon's startup."""
+def test_the_adapter_waits_for_a_daemon_that_is_still_coming_up(
+        monkeypatch, tmp_path):
+    """Loading Whisper takes a daemon seconds; an adapter that gave up
+    after the spawn would report a failure and spawn again next time."""
     _adapter(monkeypatch, tmp_path, {})
-    held, asked = [], []
-
-    @contextlib.contextmanager
-    def watched_lock():
-        held.append(True)
-        try:
-            yield
-        finally:
-            held.pop()
+    asked = []
 
     def request(path, payload=None):
-        asked.append(bool(held))
+        asked.append(path)
         if len(asked) < 4:                 # the daemon is still coming up
             raise urllib.error.URLError("connection refused")
         return _status(OURS)
 
-    monkeypatch.setattr(session_port, "start_lock", watched_lock)
     monkeypatch.setattr(mcp_server, "_request", request)
 
     mcp_server._ensure_daemon()
 
-    assert len(asked) == 4                 # one look outside, three inside
-    assert asked[1:] == [True, True, True]
+    assert len(asked) == 4                 # one look before, three after
 
 
-def test_only_one_adapter_at_a_time_may_start_a_daemon(monkeypatch):
-    """Adapters come up in bunches - one per Claude session opened at
-    once. Two of them choosing a port at the same time end up with a
-    daemon each."""
-    monkeypatch.setattr(session_port, "START_LOCK",
-                        "Local\\claude-code-ptt-test")
-    inside, seen = [], []
-
-    def start():
-        with session_port.start_lock():
-            inside.append(1)
-            seen.append(len(inside))
-            time.sleep(0.05)
-            inside.pop()
-
-    threads = [threading.Thread(target=start) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert seen == [1, 1]
-
-
-def test_the_note_goes_when_the_configured_port_is_free_again(
+def test_the_heartbeat_follows_the_daemon_back_to_the_configured_port(
         monkeypatch, tmp_path):
-    """The other account logged off: the next daemon takes the default
-    port back, and a note still pointing elsewhere would mute the hooks."""
-    _notes_in(monkeypatch, tmp_path)
-    session_port.remember(8378)
-    monkeypatch.setattr(session_port, "in_use", lambda _port: False)
+    """The stranger logged off, so our daemon restarted on the default port
+    and took its note back. An adapter that keeps heartbeating where the
+    daemon stood falls out of the overlay and stays out until its next tool
+    call - the round has to resolve the port again, not reuse it."""
+    _adapter(monkeypatch, tmp_path, {8377: _status(OURS)})
+    monkeypatch.setattr(mcp_server, "_port", 8378)   # where the daemon was
+    asked = _recorded(monkeypatch, {8377: _status(OURS)})
 
-    assert session_port.claim(8377) == 8377
-    assert session_port.resolve(8377) == 8377
-    assert list(tmp_path.iterdir()) == []
+    mcp_server._heartbeat({"pid": 4711, "cwd": "C:/projects/one"})
+
+    assert asked == [("/status", 8377), ("/heartbeat", 8377)]
+
+
+def test_the_heartbeat_does_not_join_a_foreign_daemon(monkeypatch, tmp_path):
+    """Ours is gone and the other account's daemon answers where it stood.
+    Registering there would list this session in an overlay on a desktop
+    nobody here can see."""
+    _adapter(monkeypatch, tmp_path, {})
+    asked = _recorded(monkeypatch, {8377: _status(STRANGER)})
+
+    mcp_server._heartbeat({"pid": 4711, "cwd": "C:/projects/one"})
+
+    assert asked == [("/status", 8377)]     # asked, and left it alone
+
+
+def test_a_restarted_daemon_gets_this_session_back(monkeypatch, tmp_path):
+    """A daemon that came up again knows nobody - the heartbeat coming back
+    "unknown" is what puts this session into its overlay again."""
+    _adapter(monkeypatch, tmp_path, {8377: _status(OURS)})
+    asked = _recorded(monkeypatch, {8377: _status(OURS)}, known=False)
+
+    mcp_server._heartbeat({"pid": 4711, "cwd": "C:/projects/one"})
+
+    assert [path for path, _port in asked] == ["/status", "/heartbeat",
+                                               "/register"]
 
 
 def test_the_hooks_report_to_the_noted_port(monkeypatch, tmp_path):
     """The delivery proof travels through the hooks - if they keep posting
     to the configured port, the overlay goes silent instead of confirming."""
     _notes_in(monkeypatch, tmp_path)
-    session_port.remember(8378)
+    session_port.announce(8378, 8377)
     monkeypatch.setattr(Config, "load", classmethod(lambda cls: cls()))
     posted: list[str] = []
 
@@ -295,17 +364,6 @@ def test_the_hooks_report_to_the_noted_port(monkeypatch, tmp_path):
 def test_the_status_answer_names_the_windows_session_of_the_daemon():
     """What the adapter compares against - measured through the real
     endpoint, not through the handler in isolation."""
-    daemon = SimpleNamespace(
-        recorder=SimpleNamespace(recording=False),
-        speaker=SimpleNamespace(playing=False),
-        target_hwnd=lambda: 0,
-    )
-    port = session_port.free_port(8500)
-    http_api.start(daemon, port)
+    port = http_api.start(_daemon_stub(), _free_port())
 
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/status",
-                                timeout=5) as answer:
-        import json
-        status = json.loads(answer.read())
-
-    assert status["session"] == session_port.session_id()
+    assert _status_of(port)["session"] == session_port.session_id()

@@ -57,10 +57,10 @@ def _found_our_daemon() -> bool:
     """Is a daemon of OUR Windows session listening for us?
 
     Re-reads the port note before asking, because the port this adapter
-    resolved at import time goes stale: another adapter of this session
-    may have stepped aside since and taken the daemon with it. Without
-    the re-read, this one would keep looking at the port the stranger
-    owns and start a second daemon of its own.
+    resolved at import time goes stale: the daemon of this session may
+    have had to bind a different one since. Without the re-read, this one
+    would keep looking at the port the stranger owns and spawn daemon
+    after daemon.
 
     A daemon started by another logged-on account answers on the same
     loopback port, but its overlay lives on a desktop we cannot see -
@@ -78,25 +78,23 @@ def _found_our_daemon() -> bool:
 
 
 def _ensure_daemon() -> None:
-    global _port
+    # Adapters come up in bunches - one per Claude session the user opens -
+    # so several of them spawn a daemon at once. They sort that out among
+    # themselves (see session_port.claim_instance): one becomes the daemon,
+    # the rest stop before taking anything, and all adapters end up at the
+    # port that one noted down.
     if _found_our_daemon():
         return
-    # One starter at a time per session: the others would look while this
-    # daemon boots, find its port still unbound and spawn one more.
-    with session_port.start_lock():
-        if _found_our_daemon():            # somebody was quicker
+    subprocess.Popen(
+        [sys.executable, "-m", "claude_code_ptt.daemon"],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        | subprocess.DETACHED_PROCESS,
+        close_fds=True,
+    )
+    for _ in range(50):                    # first Whisper download can be slow
+        time.sleep(0.2)
+        if _found_our_daemon():
             return
-        _port = session_port.claim(_config.daemon_port)
-        subprocess.Popen(
-            [sys.executable, "-m", "claude_code_ptt.daemon"],
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS,
-            close_fds=True,
-        )
-        for _ in range(50):                # first Whisper download can be slow
-            time.sleep(0.2)
-            if _found_our_daemon():
-                return
     raise RuntimeError("PTT daemon did not come up")
 
 
@@ -140,6 +138,25 @@ def _session_pid() -> int:
     return os.getpid()
 
 
+def _heartbeat(payload: dict) -> None:
+    """Keep this session's registration alive for one round.
+
+    Goes through _found_our_daemon rather than straight to the port this
+    adapter last used, because that port goes stale between rounds: our
+    daemon restarts onto the configured one as soon as the stranger who
+    pushed it aside logs off. Heartbeating on where it stood would drop
+    this session out of the overlay until the next tool call rediscovers
+    it - and if the stranger's daemon has since taken that port, register
+    would list this session on a desktop we cannot see."""
+    if not _found_our_daemon():
+        return                              # daemon restarts re-register us
+    try:
+        if not _request("/heartbeat", {"pid": payload["pid"]}).get("ok"):
+            _request("/register", payload)
+    except (urllib.error.URLError, OSError):
+        pass                                # next round tries again
+
+
 def _register_session() -> None:
     """Announce this session to the daemon and keep it alive with heartbeats.
 
@@ -152,12 +169,7 @@ def _register_session() -> None:
 
     def loop():
         while True:
-            try:
-                known = _request("/heartbeat", {"pid": payload["pid"]})
-                if not known.get("ok"):
-                    _request("/register", payload)
-            except (urllib.error.URLError, OSError):
-                pass                        # daemon restarts re-register us
+            _heartbeat(payload)
             time.sleep(10)
 
     def goodbye():
@@ -166,10 +178,7 @@ def _register_session() -> None:
         except (urllib.error.URLError, OSError):
             pass                            # reaper cleans up eventually
 
-    try:
-        _request("/register", payload)
-    except (urllib.error.URLError, OSError):
-        pass
+    _heartbeat(payload)                     # into the overlay right away
     atexit.register(goodbye)
     threading.Thread(target=loop, daemon=True).start()
 

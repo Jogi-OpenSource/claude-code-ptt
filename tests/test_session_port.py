@@ -99,6 +99,7 @@ def _daemon_stub():
     return SimpleNamespace(
         recorder=SimpleNamespace(recording=False),
         speaker=SimpleNamespace(playing=False),
+        paused=False,
         target_hwnd=lambda: 0,
     )
 

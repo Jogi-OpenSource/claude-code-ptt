@@ -1,10 +1,12 @@
 """Localhost HTTP API of the daemon, used by the MCP adapter and /ptt-here.
 
 Endpoints (JSON):
-  GET  /status          -> {recording, speaking, target, version, session}
+  GET  /status          -> {recording, speaking, paused, target, version, session}
   GET  /sessions        -> registered sessions
   POST /speak           -> body {"text": ...}; queues TTS playback
   POST /interrupt       -> stops TTS playback
+  POST /pause           -> body {"paused": bool}; the hotkey records nothing
+                           while paused
   POST /register        -> body {"pid", "cwd", "static"?}; session announces itself
   POST /heartbeat       -> body {"pid": ...}; keeps a registration alive
   POST /unregister      -> body {"pid": ...}; session says goodbye
@@ -54,6 +56,7 @@ def make_handler(daemon):
                 self._send(200, {
                     "recording": daemon.recorder.recording,
                     "speaking": daemon.speaker.playing,
+                    "paused": daemon.paused,
                     "target": daemon.target_hwnd(),
                     "version": __version__,
                     # loopback is shared by every logged-on account: this
@@ -78,6 +81,9 @@ def make_handler(daemon):
             elif self.path == "/interrupt":
                 daemon.speaker.interrupt()
                 self._send(200, {"ok": True})
+            elif self.path == "/pause":
+                daemon.set_paused(bool(self._body().get("paused", True)))
+                self._send(200, {"ok": True, "paused": daemon.paused})
             elif self.path == "/register":
                 body = self._body()
                 pid = int(body.get("pid") or 0)

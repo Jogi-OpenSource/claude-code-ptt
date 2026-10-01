@@ -140,6 +140,9 @@ class Daemon:
         self._sends_lock = threading.Lock()
         self._failed = False
         self._flash_until = 0.0
+        # Paused: the hotkey records nothing, e.g. while the user talks to
+        # another voice app and the mic must stay open for it.
+        self.paused = False
         self._last_level_at = 0.0
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
         threading.Thread(target=self._transcript_watchdog,
@@ -222,7 +225,20 @@ class Daemon:
         self._last_level_at = now
         events.emit("state", state="listening", level=round(level, 3))
 
+    def set_paused(self, paused: bool) -> None:
+        """Pause or resume. Pausing mid-recording drops that recording -
+        whatever was said was meant for somebody else."""
+        if paused and self.recorder.recording:
+            self.recorder.stop()
+            self.mic_mute.restore()
+            events.emit("state", state="idle")
+        self.paused = paused
+        log.info("paused" if paused else "resumed")
+
     def toggle(self) -> None:
+        if self.paused and not self.recorder.recording:
+            log.info("paused - hotkey ignored")
+            return
         if self.recorder.recording:
             audio = self.recorder.stop()
             self.mic_mute.restore()

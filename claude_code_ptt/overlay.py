@@ -6,6 +6,9 @@ another click moves it. The target row mirrors the PTT state:
   transcribing   the row text "breathes" orange (soft pulse, no blinking)
   landed         the whole row flashes orange for one second, then normal
 
+The ✕ in the title row ends the daemon (Daemon.quit); the next session that
+needs it starts a new one.
+
 Runs entirely in its own thread (tkinter mainloop), polling daemon state -
 no cross-thread tk calls.
 """
@@ -72,9 +75,17 @@ class Overlay:
         root.configure(bg=BG)
         root.geometry(f"+{root.winfo_screenwidth() - 250}+40")
 
-        title = tk.Label(root, text="● PTT", bg=BG, fg=ACCENT,
+        header = tk.Frame(root, bg=BG)
+        header.pack(fill="x", padx=(8, 4), pady=(6, 2))
+        close = tk.Label(header, text="✕", bg=BG, fg=FG, cursor="hand2",
+                         font=("Segoe UI", 10), padx=4)
+        close.pack(side="right")
+        close.bind("<Enter>", lambda _e: close.configure(fg=RED))
+        close.bind("<Leave>", lambda _e: close.configure(fg=FG))
+        close.bind("<Button-1>", lambda _e: self._daemon.quit())
+        title = tk.Label(header, text="● PTT", bg=BG, fg=ACCENT,
                          font=("Segoe UI", 10, "bold"), anchor="w")
-        title.pack(fill="x", padx=8, pady=(6, 2))
+        title.pack(side="left", fill="x", expand=True)
         rows_frame = tk.Frame(root, bg=BG)
         rows_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 

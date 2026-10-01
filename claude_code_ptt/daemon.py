@@ -235,6 +235,19 @@ class Daemon:
         self.paused = paused
         log.info("paused" if paused else "resumed")
 
+    def quit(self) -> None:
+        """End the daemon on the user's request (overlay close button, POST
+        /quit). A running recording is dropped and the microphone's mute
+        restored; the next adapter that needs a daemon starts a new one."""
+        if self.recorder.recording:
+            self.recorder.stop()
+            self.mic_mute.restore()
+        log.info("quit by user")
+        # os._exit, not sys.exit: the main thread sits in GetMessageW and the
+        # overlay's tkinter lives in a worker thread - a regular interpreter
+        # shutdown would tear tk down from the wrong thread
+        os._exit(0)
+
     def toggle(self) -> None:
         if self.paused and not self.recorder.recording:
             log.info("paused - hotkey ignored")

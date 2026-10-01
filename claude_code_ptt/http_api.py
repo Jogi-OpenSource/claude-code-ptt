@@ -7,6 +7,7 @@ Endpoints (JSON):
   POST /interrupt       -> stops TTS playback
   POST /pause           -> body {"paused": bool}; the hotkey records nothing
                            while paused
+  POST /quit            -> ends the daemon right after answering
   POST /register        -> body {"pid", "cwd", "static"?}; session announces itself
   POST /heartbeat       -> body {"pid": ...}; keeps a registration alive
   POST /unregister      -> body {"pid": ...}; session says goodbye
@@ -25,6 +26,7 @@ from .session_port import session_id
 log = logging.getLogger("claude_code_ptt")
 
 PORT_SCAN = 20                             # ports tried from the configured one
+QUIT_DELAY = 0.2                           # seconds between answering /quit and exiting
 
 
 def make_handler(daemon):
@@ -84,6 +86,10 @@ def make_handler(daemon):
             elif self.path == "/pause":
                 daemon.set_paused(bool(self._body().get("paused", True)))
                 self._send(200, {"ok": True, "paused": daemon.paused})
+            elif self.path == "/quit":
+                self._send(200, {"ok": True})
+                # a moment later, so the answer leaves before the process ends
+                threading.Timer(QUIT_DELAY, daemon.quit).start()
             elif self.path == "/register":
                 body = self._body()
                 pid = int(body.get("pid") or 0)

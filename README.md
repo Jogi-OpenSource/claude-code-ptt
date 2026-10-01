@@ -61,8 +61,9 @@ Then start a **new** Claude Code session and press **Ctrl+M**.
 ## Configuration
 
 Settings live in `%APPDATA%\claude-code-ptt\config.json`, written on first
-start. Edit it and restart the daemon (close the overlay, press the hotkey
-again) for the changes to take effect.
+start. Edit it and restart the daemon for the changes to take effect: close
+the overlay with its ✕ — that ends the daemon — and the next Claude Code
+session that speaks or starts brings up a fresh one.
 
 | Key | Default | What it does |
 |---|---|---|

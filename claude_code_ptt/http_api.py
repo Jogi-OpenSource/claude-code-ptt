@@ -3,6 +3,11 @@
 Endpoints (JSON):
   GET  /status          -> {recording, speaking, paused, target, version, session}
   GET  /sessions        -> registered sessions
+  GET  /ui              -> {phase, highlight_pid, speaking_pid, paused, sessions}:
+                           everything the overlay shows, for a front end of
+                           your own
+  POST /target          -> body {"pid": ...}; chooses the PTT target session,
+                           exactly like a click on its overlay row
   POST /speak           -> body {"text": ...}; queues TTS playback
   POST /interrupt       -> stops TTS playback
   POST /pause           -> body {"paused": bool}; the hotkey records nothing
@@ -68,6 +73,11 @@ def make_handler(daemon):
                 })
             elif self.path == "/sessions":
                 self._send(200, daemon.registry.list())
+            elif self.path == "/ui":
+                state = daemon.ui_state()
+                state["paused"] = daemon.paused
+                state["sessions"] = daemon.registry.list()
+                self._send(200, state)
             else:
                 self._send(404, {"error": "unknown path"})
 
@@ -83,6 +93,14 @@ def make_handler(daemon):
             elif self.path == "/interrupt":
                 daemon.speaker.interrupt()
                 self._send(200, {"ok": True})
+            elif self.path == "/target":
+                pid = int(self._body().get("pid") or 0)
+                if not any(s["pid"] == pid for s in daemon.registry.list()):
+                    self._send(404, {"error": "unknown session"})
+                    return
+                daemon.select_target(pid)
+                self._send(200, {"ok": True,
+                                 "target": daemon.registry.effective_pid()})
             elif self.path == "/pause":
                 daemon.set_paused(bool(self._body().get("paused", True)))
                 self._send(200, {"ok": True, "paused": daemon.paused})

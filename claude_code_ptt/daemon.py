@@ -147,7 +147,8 @@ class Daemon:
         threading.Thread(target=self._confirm_watchdog, daemon=True).start()
         threading.Thread(target=self._transcript_watchdog,
                          daemon=True).start()
-        Overlay(self)
+        if self.config.overlay:
+            Overlay(self)
 
     def target_hwnd(self) -> int:
         """The explicitly selected session's window; 0 if none."""

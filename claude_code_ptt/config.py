@@ -35,6 +35,10 @@ class Config:
     # replies) to another app - a status bar, an overlay, a phone screen.
     # Empty = no events are sent. See events.py for the payloads.
     event_webhook: str = ""
+    # Show the built-in floating session window. Switch it off when a front
+    # end of your own shows the state and picks the target (GET /ui,
+    # POST /target).
+    overlay: bool = True
 
     @classmethod
     def load(cls) -> "Config":
